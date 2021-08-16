@@ -13,6 +13,8 @@ netdb.h
 -
 stdio.h
 -
+stdlib.h
+-
 pthread.h
 -
 unistd.h

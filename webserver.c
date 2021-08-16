@@ -1,6 +1,7 @@
 #include <sys/socket.h>
 #include <netdb.h>
 #include <stdio.h>
+#include <stdlib.h>
 #include <pthread.h>
 #include <unistd.h>
 
@@ -15,6 +16,11 @@ typedef struct {
   int clientIdThreadCounter;
   pthread_mutex_t mutexLock;
 } webserver;
+
+struct pthreadClientHandleArgs{
+  webserver *wserver;
+  int socket;
+};
 
 int wsInit(webserver *wserver, int port) {
   wserver->port = port;
@@ -55,6 +61,8 @@ void *clientHandle(void *arg) {
 
 int wsListen(webserver *wserver) {
   struct sockaddr_in tempClient;
+  static struct pthreadClientHandleArgs clientArgs = {};
+
   int newSocket;
   socklen_t addr_size;
   while(1)
@@ -62,7 +70,9 @@ int wsListen(webserver *wserver) {
     addr_size = sizeof tempClient;
     newSocket = accept(wserver->wserverSocket, (struct sockaddr *) &tempClient, &addr_size);
 
-    if(pthread_create(&wserver->clientThreads[wserver->clientIdThreadCounter], NULL, clientHandle, &clientHandle) != 0 ) {
+    clientArgs.wserver = wserver;
+    clientArgs.socket = newSocket;
+    if(pthread_create(&wserver->clientThreads[wserver->clientIdThreadCounter], NULL, clientHandle, (void*)&clientArgs) != 0 ) {
       return 1;
     } else {
       wserver->clientIdThreadCounter++;
@@ -76,6 +86,20 @@ int wsListen(webserver *wserver) {
  * Server Main.
  */
 int main() {
+  int rc = 0;
+  webserver *wserver = (webserver *)malloc(sizeof(webserver));
+
+  rc = wsInit(wserver, 80);
+  if (rc != 0) {
+    printf("failed to init struct \n");
+    return 1;
+  }
+
+  rc = wsListen(wserver);
+  if (rc != 0) {
+    printf("failed to setup client conn \n");
+    return 1;
+  }
 
 
   printf("Server ended successfully\n");
