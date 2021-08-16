@@ -1,0 +1,20 @@
+#IncludeRegexLine: ^[ 	]*[#%][ 	]*(include|import)[ 	]*[<"]([^">]+)([">])
+
+#IncludeRegexScan: ^.*$
+
+#IncludeRegexComplain: ^$
+
+#IncludeRegexTransform: 
+
+/Users/luickklippel/Documents/Projekte/basicWebserver/webserver.c
+sys/socket.h
+-
+netdb.h
+-
+stdio.h
+-
+pthread.h
+-
+unistd.h
+-
+
