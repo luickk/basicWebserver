@@ -9,7 +9,7 @@
 #define MAX_CLIENTS 10
 
 #define CRLF 0x0D0A
-#define SP 0x0A
+#define SP 0x20
 
 typedef struct {
   unsigned short port;
@@ -26,14 +26,20 @@ struct pthreadClientHandleArgs{
 };
 
 enum httpMethod {
+  OPTIONS,
   GET,
-  POST
+  HEAD,
+  POST,
+  PUT,
+  DELETE,
+  TRACE,
+  CONNECT
 };
 
 struct httpRequest {
   int reqMethod;
   double httpVersion;
-  char requestUri[];
+  char *requestUri;
 
   // char *browserAccept;
   // char *browserUserAgent;
@@ -43,13 +49,61 @@ struct httpRequest {
 };
 
 void parseHttpRequest(char requestBuffer[], struct httpRequest *req) {
-  char *tok;
-  const char crlf = (char)CRLF;
-  char *buffCpy = strdup(requestBuffer);
+  char *tokCLFR, *tokSP, *tokSL;
+  char *buffCpyCLFR = strdup(requestBuffer);
 
-  while ((tok = strsep(&buffCpy, &crlf)) != NULL) {
-    printf("Line: %s \n", tok);
+  const char crlf = (char)CRLF;
+  const char sp = (char)SP;
+  const char sl = (char)"/";
+
+  int i=0,j=0,k=0;
+
+  while ((tokCLFR = strsep(&buffCpyCLFR, &crlf)) != NULL) {
+    // request line parsing
+    if (i == 0) {
+      while ((tokSP = strsep(&tokCLFR, &sp)) != NULL) {
+        printf("RLineR: %s \n", tokSP);
+        switch(j) {
+          case 0:
+            if (strncmp(tokSP, "OPTIONS", strlen(tokSP)) == 0) {
+              req->reqMethod = OPTIONS;
+            } else if (strncmp(tokSP, "GET", strlen(tokSP)) == 0) {
+              req->reqMethod = GET;
+            } else if (strncmp(tokSP, "HEAD", strlen(tokSP)) == 0) {
+              req->reqMethod = HEAD;
+            } else if (strncmp(tokSP, "PUT", strlen(tokSP)) == 0) {
+              req->reqMethod = PUT;
+            } else if (strncmp(tokSP, "DELETE", strlen(tokSP)) == 0) {
+              req->reqMethod = DELETE;
+            } else if (strncmp(tokSP, "TRACE", strlen(tokSP)) == 0) {
+              req->reqMethod = TRACE;
+            } else if (strncmp(tokSP, "CONNECT", strlen(tokSP)) == 0) {
+              req->reqMethod = CONNECT;
+            }
+            break;
+          case 1:
+            req->requestUri = strdup(tokSP);
+            break;
+          case 2:
+            tokSL = strdup(tokSP);
+            while ((tokSL = strsep(&tokSL, &sl)) != NULL) {
+              printf("---------- tokSL %s \n", tokSL);
+              if (k==1) {
+                req->httpVersion = atof(tokSL);
+                printf("---------- tokSL %s \n", tokSL);
+                break;
+              }
+              k++;
+            }
+        }
+        j++;
+      }
+    } else {
+      printf("LineS: %s \n", tokCLFR);
+    }
+    i++;
   }
+  free(buffCpyCLFR);
 }
 
 int wsInit(webserver *wserver, int port) {
@@ -89,9 +143,13 @@ void *clientHandle(void *args) {
 
   read(argss->socket, buff, sizeof(buff));
 
-  printf("From client: %s \n ", buff);
-  printf("----------------------------- \n");
+  // printf("From client: %s \n ", buff);
+  // printf("----------------------------- \n");
   parseHttpRequest(buff, httpReq);
+
+  printf("http version: %f \n", httpReq->httpVersion);
+  printf("req method: %i \n", httpReq->reqMethod);
+  printf("req uri: %s \n", httpReq->requestUri);
 
   pthread_exit(NULL);
 }
