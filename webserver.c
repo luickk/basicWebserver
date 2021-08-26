@@ -10,8 +10,11 @@
 
 #define MAX_CLIENTS 10
 
-#define CRLF 0x0D0A
+#define CR 0x0D
+#define LF 0x0A
 #define SP 0x20
+
+#define REQ_LINE_LEN 3
 
 typedef struct {
   unsigned short port;
@@ -50,62 +53,30 @@ struct httpRequest {
   // char *connType;
 };
 
-void parseHttpRequest(char requestBuffer[], struct httpRequest *req) {
-  char *tokCLFR, *tokSP, *tokSL;
-  char *buffCpyCLFR = strdup(requestBuffer);
+void parseHttpRequest(char reqBuff[], int reqBuffSize, struct httpRequest *req) {
+  char *reqBuffCpy = strdup(reqBuff);
 
-  const char crlf = (char)CRLF;
-  const char sp = (char)SP;
-  const char sl = (char)0x2F;
+  char **reqLineElements = (char**)malloc(REQ_LINE_LEN);
+  int iELement = 0;
 
-  int i=0,j=0,k=0;
-// switch begcase 1j++switch begcase 1j++switch begcase 2j++http version: 1.100000 
-// switch beg, case 1, case 2, j++, switch beg, case 1, case 2, j++, switch beg, case 2j++http version: 0.000000
-
-  while ((tokCLFR = strsep(&buffCpyCLFR, &crlf)) != NULL) {
+  for (int i = 0; i<reqBuffSize; i++) {
     // request line parsing
-    if (i == 0) {
-      while ((tokSP = strsep(&tokCLFR, &sp)) != NULL) {
-        printf("switch beg");
-        switch(j) {
-          case 0:
-            if (strncmp(tokSP, "OPTIONS", strlen(tokSP)) == 0) {
-              req->reqMethod = OPTIONS;
-            } else if (strncmp(tokSP, "GET", strlen(tokSP)) == 0) {
-              req->reqMethod = GET;
-            } else if (strncmp(tokSP, "HEAD", strlen(tokSP)) == 0) {
-              req->reqMethod = HEAD;
-            } else if (strncmp(tokSP, "PUT", strlen(tokSP)) == 0) {
-              req->reqMethod = PUT;
-            } else if (strncmp(tokSP, "DELETE", strlen(tokSP)) == 0) {
-              req->reqMethod = DELETE;
-            } else if (strncmp(tokSP, "TRACE", strlen(tokSP)) == 0) {
-              req->reqMethod = TRACE;
-            } else if (strncmp(tokSP, "CONNECT", strlen(tokSP)) == 0) {
-              req->reqMethod = CONNECT;
-            }
-          case 1:
-            printf("case 1");
-            req->requestUri = strdup(tokSP);
-            // break;
-          case 2:
-            printf("case 2");
-            while ((tokSL = strsep(&tokSP, &sl)) != NULL) {
-              if (k==1) {
-                req->httpVersion = atof(tokSL);
-              }
-              k++;
-            }
-        }
-        printf("j++");
-        j++;
-      }
-    } else {
+    if (reqBuffCpy[i] == SP || (reqBuffCpy[i] == CR && reqBuffCpy[i+1] == LF)) {
+      reqLineElements[iELement] = (char*)malloc(i+1);
+      strncpy(reqLineElements[iELement], reqBuffCpy, i);
+      reqLineElements[iELement][i+1] = "\0";
 
+      printf("sad: %s \n", reqLineElements[iELement]);
+      iELement++;
+
+      if (reqBuffCpy[i] == CR && reqBuffCpy[i+1] == LF ) {
+        printf("end reached \n");
+        break;
+      }
     }
-    i++;
   }
-  free(buffCpyCLFR);
+  
+  free(reqBuffCpy);
 }
 
 int wsInit(webserver *wserver, int port) {
@@ -147,7 +118,7 @@ void *clientHandle(void *args) {
 
   // printf("From client: %s \n ", buff);
   // printf("----------------------------- \n");
-  parseHttpRequest(buff, httpReq);
+  parseHttpRequest(buff, strlen(buff), httpReq);
 
   printf("http version: %f \n", httpReq->httpVersion);
   printf("req method: %i \n", httpReq->reqMethod);
