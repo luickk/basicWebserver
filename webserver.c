@@ -6,6 +6,8 @@
 #include <pthread.h>
 #include <unistd.h>
 
+#define DEBUG 1
+
 #define MAX_CLIENTS 10
 
 #define CRLF 0x0D0A
@@ -54,15 +56,17 @@ void parseHttpRequest(char requestBuffer[], struct httpRequest *req) {
 
   const char crlf = (char)CRLF;
   const char sp = (char)SP;
-  const char sl = (char)"/";
+  const char sl = (char)0x2F;
 
   int i=0,j=0,k=0;
+// switch begcase 1j++switch begcase 1j++switch begcase 2j++http version: 1.100000 
+// switch beg, case 1, case 2, j++, switch beg, case 1, case 2, j++, switch beg, case 2j++http version: 0.000000
 
   while ((tokCLFR = strsep(&buffCpyCLFR, &crlf)) != NULL) {
     // request line parsing
     if (i == 0) {
       while ((tokSP = strsep(&tokCLFR, &sp)) != NULL) {
-        printf("RLineR: %s \n", tokSP);
+        printf("switch beg");
         switch(j) {
           case 0:
             if (strncmp(tokSP, "OPTIONS", strlen(tokSP)) == 0) {
@@ -80,26 +84,24 @@ void parseHttpRequest(char requestBuffer[], struct httpRequest *req) {
             } else if (strncmp(tokSP, "CONNECT", strlen(tokSP)) == 0) {
               req->reqMethod = CONNECT;
             }
-            break;
           case 1:
+            printf("case 1");
             req->requestUri = strdup(tokSP);
-            break;
+            // break;
           case 2:
-            tokSL = strdup(tokSP);
-            while ((tokSL = strsep(&tokSL, &sl)) != NULL) {
-              printf("---------- tokSL %s \n", tokSL);
+            printf("case 2");
+            while ((tokSL = strsep(&tokSP, &sl)) != NULL) {
               if (k==1) {
                 req->httpVersion = atof(tokSL);
-                printf("---------- tokSL %s \n", tokSL);
-                break;
               }
               k++;
             }
         }
+        printf("j++");
         j++;
       }
     } else {
-      printf("LineS: %s \n", tokCLFR);
+
     }
     i++;
   }
@@ -164,6 +166,15 @@ int wsListen(webserver *wserver) {
   {
     addr_size = sizeof tempClient;
     newSocket = accept(wserver->wserverSocket, (struct sockaddr *) &tempClient, &addr_size);
+
+    #ifdef DEBUG
+    // telling the kernel to that the socket is reused - only for debugging purposes
+    int yes=1;
+    if (setsockopt(newSocket, SOL_SOCKET, SO_REUSEADDR, &yes, sizeof(yes)) == -1) {
+        perror("setsockopt");
+        return 1;
+    }
+    #endif
 
     clientArgs.wserver = wserver;
     clientArgs.socket = newSocket;
