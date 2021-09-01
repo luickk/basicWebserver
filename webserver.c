@@ -16,6 +16,11 @@
 
 #define REQ_LINE_LEN 3
 
+#define HTTP_VERSION "1.1"
+#define WS_VERSION "1.0"
+
+#define WS_BUFF_SIZE 1024
+
 typedef struct {
   unsigned short port;
   struct sockaddr_in server;
@@ -53,7 +58,77 @@ struct httpRequest {
   // char *connType;
 };
 
-void parseHttpRequest(char reqBuff[], int reqBuffSize, struct httpRequest *req) {
+int sendBuffer(int sock, char *buff, int buffSize) {
+  int sendLeft = buffSize;
+  int rc;
+  while (sendLeft > 0)
+  {
+    rc = send(sock, buff+(buffSize-sendLeft), sendLeft, 0);
+    if (rc == -1) {
+     return 1;
+    }
+    sendLeft -= rc;
+  }
+  return 0;
+}
+
+void printfBuffer(char *buff, int buffSize) {
+  fwrite(buff, buffSize, 1, stdout);
+  fflush(stdout);
+}
+
+int craftResp(int statusCode, char *reasonPhrase, char *contentBuff, int contentSize,
+              char *respBuff, int *respSize) {
+  if (statusCode < 100 || statusCode > 500) {
+    printf("status line resp stat code invlid");
+    return 1;
+  }
+
+  // status line
+  *respSize += sprintf(respBuff+*respSize, "HTTP/%s %d %s", HTTP_VERSION, statusCode, reasonPhrase);
+  // CRLF
+  respBuff[*respSize+1] = CR;
+  respBuff[*respSize+2] = LF;
+  *respSize += 2;
+
+  // response header
+  *respSize += sprintf(respBuff+*respSize, "Server: basicWebserver/%s", WS_VERSION);
+  // CRLF
+  respBuff[*respSize+1] = CR;
+  respBuff[*respSize+2] = LF;
+  *respSize += 2;
+
+  // entity header
+  *respSize += sprintf(respBuff+*respSize, "Content-type: text/html, text, plain");
+  // CRLF
+  respBuff[*respSize+1] = CR;
+  respBuff[*respSize+2] = LF;
+  *respSize += 2;
+
+  *respSize += sprintf(respBuff+*respSize, "Content-length: %d", contentSize);
+  // CRLF
+  respBuff[*respSize+1] = CR;
+  respBuff[*respSize+2] = LF;
+  *respSize += 2;
+
+  strncat(respBuff+*respSize, contentBuff, contentSize);
+  *respSize += contentSize;
+
+  respBuff[*respSize+1] = CR;
+  respBuff[*respSize+2] = LF;
+  *respSize += 2;
+
+  respBuff[*respSize+1] = CR;
+  respBuff[*respSize+2] = LF;
+  *respSize += 2;
+
+  // printf("%s \n", respBuff);
+  // printf("%d \n", *respSize);
+
+  return 0;
+}
+
+int parseHttpRequest(char reqBuff[], struct httpRequest *req, int reqBuffSize) {
   char *reqBuffCpy = strdup(reqBuff);
 
   char **reqLineElements = (char**)malloc(REQ_LINE_LEN);
@@ -64,19 +139,16 @@ void parseHttpRequest(char reqBuff[], int reqBuffSize, struct httpRequest *req) 
     if (reqBuffCpy[i] == SP || (reqBuffCpy[i] == CR && reqBuffCpy[i+1] == LF)) {
       reqLineElements[iELement] = (char*)malloc(i+1);
       strncpy(reqLineElements[iELement], reqBuffCpy, i);
-      reqLineElements[iELement][i+1] = "\0";
-
-      printf("sad: %s \n", reqLineElements[iELement]);
+      reqLineElements[iELement][i+1] = (char)0;
       iELement++;
-
       if (reqBuffCpy[i] == CR && reqBuffCpy[i+1] == LF ) {
-        printf("end reached \n");
         break;
       }
     }
   }
-  
+
   free(reqBuffCpy);
+  return 0;
 }
 
 int wsInit(webserver *wserver, int port) {
@@ -112,18 +184,43 @@ int wsInit(webserver *wserver, int port) {
 void *clientHandle(void *args) {
   struct httpRequest *httpReq = (struct httpRequest*)malloc(sizeof(struct httpRequest));
   struct pthreadClientHandleArgs *argss = (struct pthreadClientHandleArgs*)args;
-  char buff[1024] = {};
+  char buff[WS_BUFF_SIZE] = {};
+  int rc, *respSize;
 
-  read(argss->socket, buff, sizeof(buff));
+  rc = craftResp(400, "err", "p", 1, buff, &*respSize);
+  if (rc != 0){
+    printf("craft Status Line Resp err \n");
+    pthread_exit(NULL);
+  }
+  printfBuffer(buff, WS_BUFF_SIZE);
+  // write(argss->socket, buff, sizeof(buff));
+  // sendBuffer(argss->socket, buff, WS_BUFF_SIZE);
+
+  int buffSize = read(argss->socket, buff, sizeof(buff));
+
+  // sec checks
+  if (buffSize >= WS_BUFF_SIZE) {
+    printf("http req exceeds defined buffer size \n");
+    pthread_exit(NULL);
+  }
+  if (buff[buffSize] != (char)0) {
+    printf("http req invalid \n");
+    pthread_exit(NULL);
+  }
 
   // printf("From client: %s \n ", buff);
-  // printf("----------------------------- \n");
-  parseHttpRequest(buff, strlen(buff), httpReq);
+  rc = parseHttpRequest(buff, httpReq, buffSize);
+  if (rc != 0){
+    printf("http req parsing failed \n");
+    pthread_exit(NULL);
+  }
+
 
   printf("http version: %f \n", httpReq->httpVersion);
   printf("req method: %i \n", httpReq->reqMethod);
   printf("req uri: %s \n", httpReq->requestUri);
 
+  fflush(stdout);
   pthread_exit(NULL);
 }
 
