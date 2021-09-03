@@ -77,55 +77,40 @@ void printfBuffer(char *buff, int buffSize) {
   fflush(stdout);
 }
 
+// crafts response header with stat line and content
+// returns buff used mem size
 int craftResp(int statusCode, char *reasonPhrase, char *contentBuff, int contentSize,
-              char *respBuff, int *respSize) {
+              char *respBuff, int respBuffSize) {
   if (statusCode < 100 || statusCode > 500) {
     printf("status line resp stat code invlid");
-    return 1;
+    return -1;
   }
+  char tempBuff[100] = {};
+  int tempSize, respSize = 0;
 
   // status line
-  *respSize += sprintf(respBuff+*respSize, "HTTP/%s %d %s", HTTP_VERSION, statusCode, reasonPhrase);
-  // CRLF
-  respBuff[*respSize+1] = CR;
-  respBuff[*respSize+2] = LF;
-  *respSize += 2;
+  tempSize = sprintf(tempBuff, "HTTP/%s %d %s", HTTP_VERSION, statusCode, reasonPhrase);
+  strncat(respBuff, tempBuff, tempSize);
+  strncat(respBuff, "\r\n", 2);
 
   // response header
-  *respSize += sprintf(respBuff+*respSize, "Server: basicWebserver/%s", WS_VERSION);
-  // CRLF
-  respBuff[*respSize+1] = CR;
-  respBuff[*respSize+2] = LF;
-  *respSize += 2;
+  tempSize = sprintf(tempBuff, "Server: basicWebserver/%s", WS_VERSION);
+  strncat(respBuff, tempBuff, tempSize);
+  strncat(respBuff, "\r\n", 2);
 
   // entity header
-  *respSize += sprintf(respBuff+*respSize, "Content-type: text/html, text, plain");
-  // CRLF
-  respBuff[*respSize+1] = CR;
-  respBuff[*respSize+2] = LF;
-  *respSize += 2;
+  tempSize = sprintf(tempBuff, "Content-type: text/html, text, plain");
+  strncat(respBuff, tempBuff, tempSize);
+  strncat(respBuff, "\r\n", 2);
 
-  *respSize += sprintf(respBuff+*respSize, "Content-length: %d", contentSize);
-  // CRLF
-  respBuff[*respSize+1] = CR;
-  respBuff[*respSize+2] = LF;
-  *respSize += 2;
+  tempSize = sprintf(tempBuff, "Content-length: %d", contentSize);
+  strncat(respBuff, tempBuff, tempSize);
+  strncat(respBuff, "\r\n", 2);
+  strncat(respBuff, "\r\n", 2);
 
-  strncat(respBuff+*respSize, contentBuff, contentSize);
-  *respSize += contentSize;
+  strncat(respBuff, contentBuff, contentSize);
 
-  respBuff[*respSize+1] = CR;
-  respBuff[*respSize+2] = LF;
-  *respSize += 2;
-
-  respBuff[*respSize+1] = CR;
-  respBuff[*respSize+2] = LF;
-  *respSize += 2;
-
-  // printf("%s \n", respBuff);
-  // printf("%d \n", *respSize);
-
-  return 0;
+  return respSize;
 }
 
 int parseHttpRequest(char reqBuff[], struct httpRequest *req, int reqBuffSize) {
@@ -140,6 +125,7 @@ int parseHttpRequest(char reqBuff[], struct httpRequest *req, int reqBuffSize) {
       reqLineElements[iELement] = (char*)malloc(i+1);
       strncpy(reqLineElements[iELement], reqBuffCpy, i);
       reqLineElements[iELement][i+1] = (char)0;
+
       iELement++;
       if (reqBuffCpy[i] == CR && reqBuffCpy[i+1] == LF ) {
         break;
@@ -185,25 +171,28 @@ void *clientHandle(void *args) {
   struct httpRequest *httpReq = (struct httpRequest*)malloc(sizeof(struct httpRequest));
   struct pthreadClientHandleArgs *argss = (struct pthreadClientHandleArgs*)args;
   char buff[WS_BUFF_SIZE] = {};
-  int rc, *respSize;
-
-  rc = craftResp(400, "err", "p", 1, buff, &*respSize);
-  if (rc != 0){
-    printf("craft Status Line Resp err \n");
-    pthread_exit(NULL);
-  }
-  printfBuffer(buff, WS_BUFF_SIZE);
-  // write(argss->socket, buff, sizeof(buff));
-  // sendBuffer(argss->socket, buff, WS_BUFF_SIZE);
+  int rc;
 
   int buffSize = read(argss->socket, buff, sizeof(buff));
 
   // sec checks
   if (buffSize >= WS_BUFF_SIZE) {
+    // rc = craftResp(400, "err", "craft Status Line Resp err", strlen("craft Status Line Resp err"), buff, WS_BUFF_SIZE);
+    // if (rc == -1){
+    //   printf("craft Status Line Resp err \n");
+    //   pthread_exit(NULL);
+    // }
+    // sendBuffer(argss->socket, buff, WS_BUFF_SIZE);
     printf("http req exceeds defined buffer size \n");
     pthread_exit(NULL);
   }
   if (buff[buffSize] != (char)0) {
+    // rc = craftResp(400, "err", "craft Status Line Resp err", strlen("craft Status Line Resp err"), buff, WS_BUFF_SIZE);
+    // if (rc == -1){
+    //   printf("craft Status Line Resp err \n");
+    //   pthread_exit(NULL);
+    // }
+    // sendBuffer(argss->socket, buff, WS_BUFF_SIZE);
     printf("http req invalid \n");
     pthread_exit(NULL);
   }
@@ -211,10 +200,24 @@ void *clientHandle(void *args) {
   // printf("From client: %s \n ", buff);
   rc = parseHttpRequest(buff, httpReq, buffSize);
   if (rc != 0){
+    // rc = craftResp(400, "err", "craft Status Line Resp err", strlen("craft Status Line Resp err"), buff, WS_BUFF_SIZE);
+    // if (rc == -1){
+    //   printf("craft Status Line Resp err \n");
+    //   pthread_exit(NULL);
+    // }
+    // // write(argss->socket, buff, sizeof(buff));
+    // sendBuffer(argss->socket, buff, WS_BUFF_SIZE);
     printf("http req parsing failed \n");
     pthread_exit(NULL);
   }
 
+  rc = craftResp(201, "ok", "test test", strlen("test test"), buff, WS_BUFF_SIZE);
+  if (rc == -1){
+    printf("craft Status Line Resp err \n");
+    pthread_exit(NULL);
+  }
+  printfBuffer(buff, WS_BUFF_SIZE);
+  sendBuffer(argss->socket, buff, WS_BUFF_SIZE);
 
   printf("http version: %f \n", httpReq->httpVersion);
   printf("req method: %i \n", httpReq->reqMethod);
