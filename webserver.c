@@ -36,14 +36,8 @@ struct pthreadClientHandleArgs{
 };
 
 enum httpMethod {
-  OPTIONS,
   GET,
-  HEAD,
-  POST,
-  PUT,
-  DELETE,
-  TRACE,
-  CONNECT
+  POST
 };
 
 struct httpResponse {
@@ -120,30 +114,55 @@ int craftResp(struct httpResponse *resp, char *respBuff, int respBuffSize) {
 }
 
 int parseHttpRequest(struct httpRequest *req, char *reqBuff, int reqBuffSize) {
-    #ifdef DEBUG
-    printf("------------ request -------------\n");
-    printf("%s \n", reqBuff);
-    printf("------------ request -------------\n");
-    #endif
+  #ifdef DEBUG
+  printf("------------ request -------------\n");
+  printf("%s \n", reqBuff);
+  printf("------------ request -------------\n");
+  #endif
 
   char *reqBuffCpy = strdup(reqBuff);
-
   char **reqLineElements = (char**)malloc(REQ_LINE_LEN);
-  int iELement = 0;
+  int iElement = 0;
+  int iElementSize = 0;
+  int iElementUsedMem = 0;
 
   for (int i = 0; i<reqBuffSize; i++) {
     // request line parsing
     if (reqBuffCpy[i] == SP || (reqBuffCpy[i] == CR && reqBuffCpy[i+1] == LF)) {
-      reqLineElements[iELement] = (char*)malloc(i+1);
-      strncpy(reqLineElements[iELement], reqBuffCpy, i);
-      reqLineElements[iELement][i+1] = (char)0;
+      if (iElement == 0) {
+        iElementSize = i+1;
+      } else {
+        iElementSize = (i-iElementUsedMem)+1;
+      }
+      reqLineElements[iElement] = (char*)malloc(iElementSize);
+      strncpy(reqLineElements[iElement], reqBuffCpy+iElementUsedMem, iElementSize);
+      reqLineElements[iElement][i+1] = (char)0;
 
-      iELement++;
+      iElementUsedMem += iElementSize;
+      iElement++;
       if (reqBuffCpy[i] == CR && reqBuffCpy[i+1] == LF ) {
         break;
       }
     }
   }
+
+  printf("cc: %s \n", reqLineElements[0]);
+  printf("cc: %s \n", reqLineElements[1]);
+  printf("cc: %s \n", reqLineElements[2]);
+  fflush(stdout);
+
+  if (strcmp(reqLineElements[0], "GET") == 0) {
+    req->reqMethod = GET;
+  } else if (strcmp(reqLineElements[0], "POST") == 0) {
+    req->reqMethod = POST;
+  }
+  // strcpy(req->requestUri, reqLineElements[1]);
+  // char *cpy = strdup(reqLineElements[2]);
+  //
+  // printf("dsfsdf: %s \n", cpy);
+  // char *tok = strtok(cpy, "/");
+ 	// tok = strtok(NULL, "/");
+
   free(reqBuffCpy);
   return 0;
 }
@@ -179,11 +198,11 @@ int wsInit(webserver *wserver, int port) {
 }
 
 void *clientHandle(void *args) {
-  struct httpRequest *httpReq = (struct httpRequest*)malloc(sizeof(struct httpRequest));
   struct pthreadClientHandleArgs *argss = (struct pthreadClientHandleArgs*)args;
-  char readBuff[WS_BUFF_SIZE] = {};
-  char respBuff[WS_BUFF_SIZE] = {};
-  static struct httpResponse resp = {};
+  char *readBuff = (char*)malloc(WS_BUFF_SIZE);
+  char *respBuff = (char*)malloc(WS_BUFF_SIZE);
+  struct httpRequest httpReq = {};
+  struct httpResponse resp = {};
   int rc;
 
   int readBuffSize = read(argss->socket, readBuff, WS_BUFF_SIZE);
@@ -192,7 +211,7 @@ void *clientHandle(void *args) {
   if (readBuffSize >= WS_BUFF_SIZE) {
     resp.statusCode = 500;
     resp.reasonPhrase = "err";
-    resp.contentBuff = "http req exceeds defined buffer size";
+    resp.contentBuff = "http req exceeds buffer size";
     resp.contentSize = strlen(resp.contentBuff);
     printf("http req exceeds defined buffer size \n");
     pthread_exit(NULL);
@@ -206,8 +225,7 @@ void *clientHandle(void *args) {
     pthread_exit(NULL);
   }
 
-  printf("sitzersd: %i", readBuffSize);
-  rc = parseHttpRequest(httpReq, readBuff, readBuffSize);
+  rc = parseHttpRequest(&httpReq, readBuff, readBuffSize);
   if (rc != 0){
     resp.statusCode = 500;
     resp.reasonPhrase = "err";
@@ -219,9 +237,9 @@ void *clientHandle(void *args) {
 
   #ifdef DEBUG
   printf("------------ parsed request -------------\n");
-  printf("http version: %f \n", httpReq->httpVersion);
-  printf("req method: %i \n", httpReq->reqMethod);
-  printf("req uri: %s \n", httpReq->requestUri);
+  printf("http version: %f \n", httpReq.httpVersion);
+  printf("req method: %i \n", httpReq.reqMethod);
+  printf("req uri: %s \n", httpReq.requestUri);
   printf("------------ parsed request -------------\n");
   #endif
 
@@ -249,7 +267,8 @@ void *clientHandle(void *args) {
     pthread_exit(NULL);
   }
 
-
+  free(readBuff);
+  free(respBuff);
   pthread_exit(NULL);
 }
 
