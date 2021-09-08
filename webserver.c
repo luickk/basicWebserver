@@ -120,50 +120,51 @@ int parseHttpRequest(struct httpRequest *req, char *reqBuff, int reqBuffSize) {
   printf("------------ request -------------\n");
   #endif
 
-  char *reqBuffCpy = strdup(reqBuff);
-  char **reqLineElements = (char**)malloc(REQ_LINE_LEN);
+  const int tempBuffSize = 100;
+  char tempBuff[tempBuffSize] = {};
+  char *tok;
   int iElement = 0;
   int iElementSize = 0;
   int iElementUsedMem = 0;
 
   for (int i = 0; i<reqBuffSize; i++) {
     // request line parsing
-    if (reqBuffCpy[i] == SP || (reqBuffCpy[i] == CR && reqBuffCpy[i+1] == LF)) {
+    if (reqBuff[i] == SP || (reqBuff[i] == CR && reqBuff[i+1] == LF)) {
       if (iElement == 0) {
-        iElementSize = i+1;
+        iElementSize = i;
       } else {
-        iElementSize = (i-iElementUsedMem)+1;
+        iElementSize = (i-iElementUsedMem);
       }
-      reqLineElements[iElement] = (char*)malloc(iElementSize);
-      strncpy(reqLineElements[iElement], reqBuffCpy+iElementUsedMem, iElementSize);
-      reqLineElements[iElement][i+1] = (char)0;
+      if (iElementSize > tempBuffSize) {
+        printf("http req parser buff size exceeded \n");
+        return 1;
+      }
+
+      memcpy(tempBuff, reqBuff+iElementUsedMem, iElementSize);
+
+      switch (iElement) {
+        case 0:
+          if (strncmp(tempBuff, "GET", iElementSize) == 0) {
+            req->reqMethod = GET;
+          } else if (strncmp(tempBuff, "POST", iElementSize) == 0) {
+            req->reqMethod = POST;
+          }
+        case 1:
+          req->requestUri = (char*)malloc(iElementSize);
+          memcpy(req->requestUri, tempBuff, iElementSize);
+        case 2:
+          tok = strtok(tempBuff, "/");
+          tok = strtok(NULL, "/");
+          printf("sadas: %s \n", tok);
+      }
 
       iElementUsedMem += iElementSize;
       iElement++;
-      if (reqBuffCpy[i] == CR && reqBuffCpy[i+1] == LF ) {
+      if (reqBuff[i] == CR && reqBuff[i+1] == LF ) {
         break;
       }
     }
   }
-
-  printf("cc: %s \n", reqLineElements[0]);
-  printf("cc: %s \n", reqLineElements[1]);
-  printf("cc: %s \n", reqLineElements[2]);
-  fflush(stdout);
-
-  if (strcmp(reqLineElements[0], "GET") == 0) {
-    req->reqMethod = GET;
-  } else if (strcmp(reqLineElements[0], "POST") == 0) {
-    req->reqMethod = POST;
-  }
-  // strcpy(req->requestUri, reqLineElements[1]);
-  // char *cpy = strdup(reqLineElements[2]);
-  //
-  // printf("dsfsdf: %s \n", cpy);
-  // char *tok = strtok(cpy, "/");
- 	// tok = strtok(NULL, "/");
-
-  free(reqBuffCpy);
   return 0;
 }
 
