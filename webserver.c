@@ -35,10 +35,7 @@ struct pthreadClientHandleArgs{
   int socket;
 };
 
-enum httpMethod {
-  GET,
-  POST
-};
+// char httpMethods[][] = { "GET", "POST" };
 
 struct httpResponse {
   int statusCode;
@@ -48,8 +45,8 @@ struct httpResponse {
 };
 
 struct httpRequest {
-  int reqMethod;
-  double httpVersion;
+  char *reqMethod;
+  float httpVersion;
   char *requestUri;
 
   // char *browserAccept;
@@ -120,13 +117,12 @@ int parseHttpRequest(struct httpRequest *req, char *reqBuff, int reqBuffSize) {
   printf("------------ request -------------\n");
   #endif
 
-  const int tempBuffSize = 100;
-  char tempBuff[tempBuffSize] = {};
   char *tok;
+  int endOfParse = 0;
   int iElement = 0;
   int iElementSize = 0;
   int iElementUsedMem = 0;
-
+  
   for (int i = 0; i<reqBuffSize; i++) {
     // request line parsing
     if (reqBuff[i] == SP || (reqBuff[i] == CR && reqBuff[i+1] == LF)) {
@@ -135,34 +131,27 @@ int parseHttpRequest(struct httpRequest *req, char *reqBuff, int reqBuffSize) {
       } else {
         iElementSize = (i-iElementUsedMem);
       }
-      if (iElementSize > tempBuffSize) {
-        printf("http req parser buff size exceeded \n");
-        return 1;
-      }
-
-      memcpy(tempBuff, reqBuff+iElementUsedMem, iElementSize);
-
       switch (iElement) {
         case 0:
-          if (strncmp(tempBuff, "GET", iElementSize) == 0) {
-            req->reqMethod = GET;
-          } else if (strncmp(tempBuff, "POST", iElementSize) == 0) {
-            req->reqMethod = POST;
-          }
+          req->reqMethod = (char*)malloc(iElementSize);
+          memcpy(req->reqMethod, reqBuff+iElementUsedMem, iElementSize);
+          break;
         case 1:
           req->requestUri = (char*)malloc(iElementSize);
-          memcpy(req->requestUri, tempBuff, iElementSize);
+          memcpy(req->requestUri, reqBuff+iElementUsedMem, iElementSize);
+          break;
         case 2:
-          tok = strtok(tempBuff, "/");
+          // extracing version number - http/x.x
+          tok = strtok(reqBuff+iElementUsedMem, "/");
           tok = strtok(NULL, "/");
-          printf("sadas: %s \n", tok);
+          req->httpVersion = atof(tok);
+          endOfParse = 1;
+          break;
       }
-
       iElementUsedMem += iElementSize;
       iElement++;
-      if (reqBuff[i] == CR && reqBuff[i+1] == LF ) {
+      if (endOfParse)
         break;
-      }
     }
   }
   return 0;
@@ -239,7 +228,7 @@ void *clientHandle(void *args) {
   #ifdef DEBUG
   printf("------------ parsed request -------------\n");
   printf("http version: %f \n", httpReq.httpVersion);
-  printf("req method: %i \n", httpReq.reqMethod);
+  printf("req method: %s \n", httpReq.reqMethod);
   printf("req uri: %s \n", httpReq.requestUri);
   printf("------------ parsed request -------------\n");
   #endif
