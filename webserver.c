@@ -1,20 +1,27 @@
 #include <sys/socket.h>
 #include <netdb.h>
 #include <stdio.h>
+#include <stdarg.h>
 #include <stdlib.h>
 #include <string.h>
 #include <pthread.h>
 #include <unistd.h>
+#include <assert.h>
 
 #define DEBUG 1
 
 #define MAX_CLIENTS 10
 
+#define MAX_HTTP_METHOD_LEN 10
+
+#define MAX_ERR_REASON_LEN 100
+#define MAX_ERR_PREFIX_LEN 20
+
 #define CR 0x0D
 #define LF 0x0A
 #define SP 0x20
 
-#define REQ_LINE_LEN 3
+#define HTTP_REQ_LINE_LEN 3
 
 #define HTTP_VERSION "1.1"
 #define WS_VERSION "1.0"
@@ -30,12 +37,18 @@ typedef struct {
   pthread_mutex_t mutexLock;
 } webserver;
 
+typedef struct {
+  char prefix[MAX_ERR_PREFIX_LEN];
+  char reason[MAX_ERR_REASON_LEN];
+  int rc;
+} wsError;
+
 struct pthreadClientHandleArgs{
   webserver *wserver;
   int socket;
 };
 
-// char httpMethods[][] = { "GET", "POST" };
+char httpMethods[][MAX_HTTP_METHOD_LEN] = { "GET", "POST" };
 
 struct httpResponse {
   int statusCode;
@@ -56,18 +69,41 @@ struct httpRequest {
   // char *connType;
 };
 
-int sendBuffer(int sock, char *buff, int buffSize) {
+wsError* initWsError(char prefix[MAX_ERR_PREFIX_LEN]) {
+  wsError *err = (wsError*)malloc(sizeof(char)*(MAX_ERR_REASON_LEN+MAX_ERR_PREFIX_LEN)+sizeof(int));
+  strcpy(err->prefix, prefix);
+  return err;
+}
+
+void setErr(wsError *err, const char* format, ...) {
+  va_list argptr;
+  va_start(argptr, format);
+  vsprintf(err->reason, format, argptr);
+  va_end(argptr);
+
+  assert(strlen(err->reason) >= MAX_ERR_REASON_LEN);
+  err->rc = 1;
+}
+void printErr(wsError *err) {
+  fprintf(stderr, "%s %s", err->prefix, err->reason);
+}
+
+int sendBuffer(int sock, char *buff, int buffSize, wsError *err) {
   int sendLeft = buffSize;
+  int dataSent = 0;
   int rc;
   while (sendLeft > 0)
   {
     rc = send(sock, buff+(buffSize-sendLeft), sendLeft, 0);
     if (rc == -1) {
-     return 1;
+      setErr(err, "send failed \n");
+      return 0;
     }
     sendLeft -= rc;
+    dataSent += rc;
   }
-  return 0;
+  err->rc = 0;
+  return dataSent;
 }
 
 void printfBuffer(char *buff, int buffSize) {
@@ -77,40 +113,46 @@ void printfBuffer(char *buff, int buffSize) {
 
 // crafts response header with stat line and content
 // returns buff used mem size
-int craftResp(struct httpResponse *resp, char *respBuff, int respBuffSize) {
+int craftResp(struct httpResponse *resp, char *respBuff, int respBuffSize, wsError *err) {
   if (resp->statusCode < 100 || resp->statusCode > 511) {
-    printf("status line resp stat code invlid %i \n", resp->statusCode);
-    return 1;
+    setErr(err, "status line resp stat code invlid %i \n", resp->statusCode);
+    return 0;
   }
   char tempBuff[100] = {};
   int tempSize = 0;
+  int size = 0;
 
-  // status line
-  tempSize = sprintf(tempBuff, "HTTP/%s %d %s", HTTP_VERSION, resp->statusCode, resp->reasonPhrase);
-  strncat(respBuff, tempBuff, tempSize);
+  for (int i = 0; i<4; i++) {
+    switch (i){
+      case 0:
+        // status line
+        tempSize = sprintf(tempBuff, "HTTP/%s %d %s", HTTP_VERSION, resp->statusCode, resp->reasonPhrase);
+        break;
+      case 1:
+        // response header
+        tempSize = sprintf(tempBuff, "Server: basicWebserver/%s", WS_VERSION);
+        break;
+      case 2:
+        // entity header
+        tempSize = sprintf(tempBuff, "Content-type: text/html, text, plain");
+        break;
+      case 3:
+        tempSize = sprintf(tempBuff, "Content-length: %d", resp->contentSize);
+        break;
+    }
+    strncat(respBuff, tempBuff, tempSize);
+    strncat(respBuff, "\r\n", 2);
+    size += tempSize+2;
+  }
+  // content
   strncat(respBuff, "\r\n", 2);
-
-  // response header
-  tempSize = sprintf(tempBuff, "Server: basicWebserver/%s", WS_VERSION);
-  strncat(respBuff, tempBuff, tempSize);
-  strncat(respBuff, "\r\n", 2);
-
-  // entity header
-  tempSize = sprintf(tempBuff, "Content-type: text/html, text, plain");
-  strncat(respBuff, tempBuff, tempSize);
-  strncat(respBuff, "\r\n", 2);
-
-  tempSize = sprintf(tempBuff, "Content-length: %d", resp->contentSize);
-  strncat(respBuff, tempBuff, tempSize);
-  strncat(respBuff, "\r\n", 2);
-  strncat(respBuff, "\r\n", 2);
-
   strncat(respBuff, resp->contentBuff, resp->contentSize);
+  size += resp->contentSize+2;
 
-  return 0;
+  return size;
 }
 
-int parseHttpRequest(struct httpRequest *req, char *reqBuff, int reqBuffSize) {
+int parseHttpRequest(struct httpRequest *req, char *reqBuff, int reqBuffSize, wsError *err) {
   #ifdef DEBUG
   printf("------------ request -------------\n");
   printf("%s \n", reqBuff);
@@ -119,10 +161,11 @@ int parseHttpRequest(struct httpRequest *req, char *reqBuff, int reqBuffSize) {
 
   char *tok;
   int endOfParse = 0;
+
   int iElement = 0;
   int iElementSize = 0;
   int iElementUsedMem = 0;
-  
+
   for (int i = 0; i<reqBuffSize; i++) {
     // request line parsing
     if (reqBuff[i] == SP || (reqBuff[i] == CR && reqBuff[i+1] == LF)) {
@@ -135,6 +178,13 @@ int parseHttpRequest(struct httpRequest *req, char *reqBuff, int reqBuffSize) {
         case 0:
           req->reqMethod = (char*)malloc(iElementSize);
           memcpy(req->reqMethod, reqBuff+iElementUsedMem, iElementSize);
+          for (int i = 0; i<(sizeof(httpMethods)/MAX_HTTP_METHOD_LEN); i++) {
+            if (strcmp(req->reqMethod, httpMethods[i]) == 0)
+              break;
+            if (i == (sizeof(httpMethods)/MAX_HTTP_METHOD_LEN))
+              setErr(err, "http method not supported \n");
+              return 0;
+          }
           break;
         case 1:
           req->requestUri = (char*)malloc(iElementSize);
@@ -154,16 +204,16 @@ int parseHttpRequest(struct httpRequest *req, char *reqBuff, int reqBuffSize) {
         break;
     }
   }
-  return 0;
+  return iElementUsedMem;
 }
 
-int wsInit(webserver *wserver, int port) {
+void wsInit(webserver *wserver, int port, wsError *err) {
   wserver->port = port;
 
   if ((wserver->wserverSocket = socket(AF_INET, SOCK_STREAM, 0)) < 0)
   {
-    printf("socket err \n");
-    return 1;
+    setErr(err, "socket err \n");
+    return;
   }
 
   wserver->server.sin_family = AF_INET;
@@ -175,20 +225,21 @@ int wsInit(webserver *wserver, int port) {
 
   if (bind(wserver->wserverSocket, (struct sockaddr *)&wserver->server, sizeof(wserver->server)) < 0)
   {
-    printf("bind err \n");
-    return 1;
+    setErr(err, "http server socket binding err \n");
+    return;
   }
 
   if (listen(wserver->wserverSocket, 1) != 0)
   {
-    printf("listenerr \n");
-    return 1;
+    setErr(err, "http server init listen err \n");
+    return;
   }
-  return 0;
 }
 
 void *clientHandle(void *args) {
   struct pthreadClientHandleArgs *argss = (struct pthreadClientHandleArgs*)args;
+  wsError *err = initWsError("clientHandle->");
+
   char *readBuff = (char*)malloc(WS_BUFF_SIZE);
   char *respBuff = (char*)malloc(WS_BUFF_SIZE);
   struct httpRequest httpReq = {};
@@ -215,13 +266,13 @@ void *clientHandle(void *args) {
     pthread_exit(NULL);
   }
 
-  rc = parseHttpRequest(&httpReq, readBuff, readBuffSize);
-  if (rc != 0){
+  rc = parseHttpRequest(&httpReq, readBuff, readBuffSize, err);
+  if (err->rc != 0){
+    printErr(err);
     resp.statusCode = 500;
     resp.reasonPhrase = "err";
-    resp.contentBuff = "http req parsing failed";
+    resp.contentBuff = err->reason;
     resp.contentSize = strlen(resp.contentBuff);
-    printf("http req parsing failed \n");
     pthread_exit(NULL);
   }
 
@@ -238,9 +289,9 @@ void *clientHandle(void *args) {
   resp.contentBuff = "test test";
   resp.contentSize = strlen(resp.contentBuff);
 
-  rc = craftResp(&resp, respBuff, WS_BUFF_SIZE);
-  if (rc == -1){
-    printf("craft Status Line Resp err \n");
+  rc = craftResp(&resp, respBuff, WS_BUFF_SIZE, err);
+  if (err->rc != 0){
+    printErr(err);
     pthread_exit(NULL);
   }
 
@@ -251,18 +302,19 @@ void *clientHandle(void *args) {
   fflush(stdout);
   #endif
 
-  rc = sendBuffer(argss->socket, respBuff, strlen(respBuff));
-  if (rc != 0) {
-    printf("send Buffer err \n");
+  rc = sendBuffer(argss->socket, respBuff, strlen(respBuff), err);
+  if (err->rc != 0) {
+    printErr(err);
     pthread_exit(NULL);
   }
 
   free(readBuff);
   free(respBuff);
+  free(err);
   pthread_exit(NULL);
 }
 
-int wsListen(webserver *wserver) {
+void wsListen(webserver *wserver, wsError *err) {
   struct sockaddr_in tempClient;
   static struct pthreadClientHandleArgs clientArgs = {};
 
@@ -277,21 +329,20 @@ int wsListen(webserver *wserver) {
     // telling the kernel to that the socket is reused - only for debugging purposes
     int yes=1;
     if (setsockopt(newSocket, SOL_SOCKET, SO_REUSEADDR, &yes, sizeof(yes)) == -1) {
-        perror("setsockopt");
-        return 1;
+        setErr(err, "(debug enabled) socket reuse set failed \n");
+        return;
     }
     #endif
 
     clientArgs.wserver = wserver;
     clientArgs.socket = newSocket;
     if(pthread_create(&wserver->clientThreads[wserver->clientIdThreadCounter], NULL, clientHandle, (void*)&clientArgs) != 0 ) {
-      return 1;
+      setErr(err, "thread create error \n");
+      return;
     } else {
       wserver->clientIdThreadCounter++;
     }
-
   }
-  return 0;
 }
 
 /*
@@ -299,21 +350,23 @@ int wsListen(webserver *wserver) {
  */
 int main() {
   int rc = 0;
+  wsError *err = initWsError("server->");
   webserver *wserver = (webserver *)malloc(sizeof(webserver));
 
-  rc = wsInit(wserver, 80);
-  if (rc != 0) {
-    printf("failed to init ws struct \n");
+  wsInit(wserver, 80, err);
+  if (err->rc != 0) {
+    printErr(err);
     return 1;
   }
 
-  rc = wsListen(wserver);
-  if (rc != 0) {
-    printf("failed to setup client conn \n");
+  wsListen(wserver, err);
+  if (err->rc != 0) {
+    printErr(err);
     return 1;
   }
 
   free(wserver);
-  printf("Server ended successfully \n");
+  free(err);
+  printf("Server stopped \n");
   return 0;
 }

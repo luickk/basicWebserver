@@ -13,6 +13,8 @@ netdb.h
 -
 stdio.h
 -
+stdarg.h
+-
 stdlib.h
 -
 string.h
@@ -20,5 +22,7 @@ string.h
 pthread.h
 -
 unistd.h
+-
+assert.h
 -
 
