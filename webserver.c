@@ -8,7 +8,7 @@
 #include <unistd.h>
 #include <assert.h>
 
-#define DEBUG 1
+// #define DEBUG 1
 
 #define MAX_CLIENTS 10
 
@@ -84,8 +84,17 @@ void setErr(wsError *err, const char* format, ...) {
   assert(strlen(err->reason) >= MAX_ERR_REASON_LEN);
   err->rc = 1;
 }
+
 void printErr(wsError *err) {
   fprintf(stderr, "%s %s", err->prefix, err->reason);
+}
+
+void wsLog(const char* format, ...) {
+  va_list argptr;
+  va_start(argptr, format);
+  fprintf(stdout, format, argptr);
+  va_end(argptr);
+  fflush(stdout);
 }
 
 int sendBuffer(int sock, char *buff, int buffSize, wsError *err) {
@@ -149,6 +158,7 @@ int craftResp(struct httpResponse *resp, char *respBuff, int respBuffSize, wsErr
   strncat(respBuff, resp->contentBuff, resp->contentSize);
   size += resp->contentSize+2;
 
+  err->rc = 0;
   return size;
 }
 
@@ -204,6 +214,8 @@ int parseHttpRequest(struct httpRequest *req, char *reqBuff, int reqBuffSize, ws
         break;
     }
   }
+
+  err->rc = 0;
   return iElementUsedMem;
 }
 
@@ -234,6 +246,7 @@ void wsInit(webserver *wserver, int port, wsError *err) {
     setErr(err, "http server init listen err \n");
     return;
   }
+  err->rc = 0;
 }
 
 void *clientHandle(void *args) {
@@ -246,23 +259,27 @@ void *clientHandle(void *args) {
   struct httpResponse resp = {};
   int rc;
 
+  wsLog("new client thread created \n");
+
   int readBuffSize = read(argss->socket, readBuff, WS_BUFF_SIZE);
 
   // sec checks
   if (readBuffSize >= WS_BUFF_SIZE) {
+    setErr(err, "http req exceeds buffer size");
     resp.statusCode = 500;
     resp.reasonPhrase = "err";
-    resp.contentBuff = "http req exceeds buffer size";
+    resp.contentBuff = err->reason;
     resp.contentSize = strlen(resp.contentBuff);
-    printf("http req exceeds defined buffer size \n");
+    printErr(err);
     pthread_exit(NULL);
   }
   if (readBuff[readBuffSize] != (char)0) {
+    setErr(err, "http req invalid");
     resp.statusCode = 500;
     resp.reasonPhrase = "err";
-    resp.contentBuff = "http req invalid";
+    resp.contentBuff = err->reason;
     resp.contentSize = strlen(resp.contentBuff);
-    printf("http req invalid \n");
+    printErr(err);
     pthread_exit(NULL);
   }
 
@@ -297,7 +314,7 @@ void *clientHandle(void *args) {
 
   #ifdef DEBUG
   printf("------------ response -------------\n");
-  printfBuffer(respBuff, strlen(respBuff));
+  printf(respBuff, strlen(respBuff));
   printf("------------ response -------------\n");
   fflush(stdout);
   #endif
@@ -308,9 +325,13 @@ void *clientHandle(void *args) {
     pthread_exit(NULL);
   }
 
+  wsLog("server-response sent \n");
+
   free(readBuff);
   free(respBuff);
   free(err);
+  close(argss->socket);
+  
   pthread_exit(NULL);
 }
 
@@ -318,18 +339,21 @@ void wsListen(webserver *wserver, wsError *err) {
   struct sockaddr_in tempClient;
   static struct pthreadClientHandleArgs clientArgs = {};
 
+  wsLog("server listening \n");
+
   int newSocket;
   socklen_t addr_size;
   while(1)
   {
     addr_size = sizeof tempClient;
     newSocket = accept(wserver->wserverSocket, (struct sockaddr *) &tempClient, &addr_size);
+    wsLog("new client connected \n");
 
     #ifdef DEBUG
     // telling the kernel to that the socket is reused - only for debugging purposes
     int yes=1;
     if (setsockopt(newSocket, SOL_SOCKET, SO_REUSEADDR, &yes, sizeof(yes)) == -1) {
-        setErr(err, "(debug enabled) socket reuse set failed \n");
+        setErr(err, "(debug flag set) socket reuse set failed \n");
         return;
     }
     #endif
@@ -343,6 +367,7 @@ void wsListen(webserver *wserver, wsError *err) {
       wserver->clientIdThreadCounter++;
     }
   }
+  err->rc = 0;
 }
 
 /*
@@ -358,6 +383,7 @@ int main() {
     printErr(err);
     return 1;
   }
+  wsLog("server initiated \n");
 
   wsListen(wserver, err);
   if (err->rc != 0) {
@@ -367,6 +393,5 @@ int main() {
 
   free(wserver);
   free(err);
-  printf("Server stopped \n");
   return 0;
 }
