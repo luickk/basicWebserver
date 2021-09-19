@@ -101,15 +101,9 @@ void wsLog(const char* format, ...) {
 }
 
 struct httpRoute *createRoute(char *path, char *method, struct httpResponse *resp) {
-  // struct httpResponse *resp = (struct httpResponse*)malloc(sizeof(struct httpResponse));
-  // resp->statusCode = 200;
-  // resp->reasonPhrase = "succ";
-  // memcpy(resp->contentBuff, contentBuff, contentSize);
-  // resp->contentSize = contentSize;
-
   struct httpRoute *route = (struct httpRoute*)malloc(sizeof(struct httpRoute));
-  strcpy(route->path, path);
-  strcpy(route->method, method);
+  route->path = path;
+  route->method = method;
   route->httpResp = resp;
 
   return route;
@@ -125,7 +119,7 @@ void addRouteToWs(webserver *ws, struct httpRoute *route) {
     ws->routes = (struct httpRoute*)malloc(sizeof(struct httpRoute*));
     ws->routes[ws->nRoutes] = *route;
   } else {
-    ws->routes = (struct httpRoute*)malloc((ws->nRoutes+1)*sizeof(struct httpRoute*));
+    ws->routes = (struct httpRoute*)realloc(ws->routes, (ws->nRoutes+1)*sizeof(struct httpRoute*));
     ws->routes[ws->nRoutes] = *route;
   }
   ws->nRoutes += 1;
@@ -346,33 +340,48 @@ void *clientHandle(void *args) {
   printf("------------ parsed request -------------\n");
   #endif
 
-  resp.statusCode = 200;
-  resp.reasonPhrase = "ok";
-  resp.contentBuff = "test test";
-  resp.contentSize = strlen(resp.contentBuff);
+  // resp.statusCode = 200;
+  // resp.reasonPhrase = "ok";
+  // resp.contentBuff = "test test";
+  // resp.contentSize = strlen(resp.contentBuff);
+  //
+  // respSize = craftResp(&resp, respBuff, WS_BUFF_SIZE, err);
+  // if (err->rc != 0){
+  //   printErr(err);
+  //   freeClient(readBuff, respBuff, &httpReq, err);
+  //   close(argss->socket);
+  //   pthread_exit(NULL);
+  // }
+  //
+  // #ifdef DEBUG
+  // printf("------------ response -------------\n");
+  // printf(respBuff, strlen(respBuff));
+  // printf("------------ response -------------\n");
+  // fflush(stdout);
+  // #endif
 
-  respSize = craftResp(&resp, respBuff, WS_BUFF_SIZE, err);
-  if (err->rc != 0){
-    printErr(err);
-    freeClient(readBuff, respBuff, &httpReq, err);
-    close(argss->socket);
-    pthread_exit(NULL);
+  for (int i = 0; i < argss->wserver->nRoutes; i++) {
+    if (strcmp(argss->wserver->routes[i].path, httpReq.requestUri) == 0) {
+      printf("FOUND");
+      respSize = craftResp(argss->wserver->routes[i].httpResp, respBuff, WS_BUFF_SIZE, err);
+      if (err->rc != 0){
+        printErr(err);
+        freeClient(readBuff, respBuff, &httpReq, err);
+        close(argss->socket);
+        pthread_exit(NULL);
+      }
+
+      sentBuffSize = sendBuffer(argss->socket, respBuff, strlen(respBuff), err);
+      if (err->rc != 0) {
+        printErr(err);
+        freeClient(readBuff, respBuff, &httpReq, err);
+        close(argss->socket);
+        pthread_exit(NULL);
+      }
+    }
   }
 
-  #ifdef DEBUG
-  printf("------------ response -------------\n");
-  printf(respBuff, strlen(respBuff));
-  printf("------------ response -------------\n");
-  fflush(stdout);
-  #endif
 
-  sentBuffSize = sendBuffer(argss->socket, respBuff, strlen(respBuff), err);
-  if (err->rc != 0) {
-    printErr(err);
-    freeClient(readBuff, respBuff, &httpReq, err);
-    close(argss->socket);
-    pthread_exit(NULL);
-  }
 
   wsLog("server-response sent \n");
 
@@ -429,6 +438,15 @@ int main() {
     return 1;
   }
   wsLog("server initiated \n");
+
+  struct httpResponse *routeResponse = (struct httpResponse*)malloc(sizeof(struct httpResponse));
+  routeResponse->statusCode = 200;
+  routeResponse->reasonPhrase = "succ";
+  routeResponse->contentBuff = "lol";
+  routeResponse->contentSize = 3;
+  struct httpRoute *route = createRoute("lol", "GET", routeResponse);
+
+  addRouteToWs(wserver, route);
 
   wsListen(wserver, err);
   if (err->rc != 0) {
