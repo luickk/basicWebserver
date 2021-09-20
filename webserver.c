@@ -122,7 +122,15 @@ void addRouteToWs(webserver *ws, struct httpRoute *route) {
     ws->routes = (struct httpRoute*)realloc(ws->routes, (ws->nRoutes+1)*sizeof(struct httpRoute*));
     ws->routes[ws->nRoutes] = *route;
   }
-  ws->nRoutes += 1;
+  ws->nRoutes++;
+}
+
+
+void removeSpaces(char* str, int strlen) {
+  int count = 0;
+  for (int i = 0; i <= strlen; i++)
+      if (str[i] != ' ')
+          str[count++] = str[i];
 }
 
 int sendBuffer(int sock, char *buff, int buffSize, wsError *err) {
@@ -224,6 +232,7 @@ int parseHttpRequest(struct httpRequest *req, char *reqBuff, int reqBuffSize, ws
         case 1:
           req->requestUri = (char*)malloc(iElementSize);
           memcpy(req->requestUri, reqBuff+iElementUsedMem, iElementSize);
+          removeSpaces(req->requestUri, iElementSize);
           break;
         case 2:
           // extracing version number - http/x.x
@@ -362,22 +371,25 @@ void *clientHandle(void *args) {
 
   for (int i = 0; i < argss->wserver->nRoutes; i++) {
     if (strcmp(argss->wserver->routes[i].path, httpReq.requestUri) == 0) {
-      printf("FOUND");
-      respSize = craftResp(argss->wserver->routes[i].httpResp, respBuff, WS_BUFF_SIZE, err);
-      if (err->rc != 0){
-        printErr(err);
-        freeClient(readBuff, respBuff, &httpReq, err);
-        close(argss->socket);
-        pthread_exit(NULL);
-      }
 
-      sentBuffSize = sendBuffer(argss->socket, respBuff, strlen(respBuff), err);
-      if (err->rc != 0) {
-        printErr(err);
-        freeClient(readBuff, respBuff, &httpReq, err);
-        close(argss->socket);
-        pthread_exit(NULL);
-      }
+      printf("stat code: %i \n", argss->wserver->routes[i].httpResp->statusCode);
+
+      // respSize = craftResp(argss->wserver->routes[i].httpResp, respBuff, WS_BUFF_SIZE, err);
+      // if (err->rc != 0){
+      //   printErr(err);
+      //   freeClient(readBuff, respBuff, &httpReq, err);
+      //   close(argss->socket);
+      //   pthread_exit(NULL);
+      // }
+
+      // sentBuffSize = sendBuffer(argss->socket, respBuff, strlen(respBuff), err);
+      // if (err->rc != 0) {
+      //   printErr(err);
+      //   freeClient(readBuff, respBuff, &httpReq, err);
+      //   close(argss->socket);
+      //   pthread_exit(NULL);
+      // }
+
     }
   }
 
@@ -444,7 +456,7 @@ int main() {
   routeResponse->reasonPhrase = "succ";
   routeResponse->contentBuff = "lol";
   routeResponse->contentSize = 3;
-  struct httpRoute *route = createRoute("lol", "GET", routeResponse);
+  struct httpRoute *route = createRoute("/lol", "GET", routeResponse);
 
   addRouteToWs(wserver, route);
 
