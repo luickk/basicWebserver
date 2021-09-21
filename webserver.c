@@ -301,6 +301,7 @@ void *clientHandle(void *args) {
   struct httpRequest httpReq = {};
   struct httpResponse resp = {};
   int respSize, reqSize, sentBuffSize;
+  int routeFound = 0;
 
   wsLog("new client thread created \n");
 
@@ -308,21 +309,12 @@ void *clientHandle(void *args) {
 
   // sec checks
   if (readBuffSize >= WS_BUFF_SIZE) {
-    setErr(err, "http req exceeds buffer size");
-    resp.statusCode = 500;
-    resp.reasonPhrase = "err";
-    resp.contentBuff = err->reason;
-    resp.contentSize = strlen(resp.contentBuff);
+    setErr(err, "http req exceeds buffer size \n");
     printErr(err);
     pthread_exit(NULL);
   }
   if (readBuff[readBuffSize] != (char)0) {
-    setErr(err, "http req invalid");
-    resp.statusCode = 500;
-    resp.reasonPhrase = "err";
-    resp.contentBuff = err->reason;
-    resp.contentSize = strlen(resp.contentBuff);
-
+    setErr(err, "http req invalid \n");
     printErr(err);
     freeClient(readBuff, respBuff, &httpReq, err);
     close(argss->socket);
@@ -332,10 +324,6 @@ void *clientHandle(void *args) {
   reqSize = parseHttpRequest(&httpReq, readBuff, readBuffSize, err);
   if (err->rc != 0){
     printErr(err);
-    resp.statusCode = 500;
-    resp.reasonPhrase = "err";
-    resp.contentBuff = err->reason;
-    resp.contentSize = strlen(resp.contentBuff);
     freeClient(readBuff, respBuff, &httpReq, err);
     close(argss->socket);
     pthread_exit(NULL);
@@ -349,51 +337,58 @@ void *clientHandle(void *args) {
   printf("------------ parsed request -------------\n");
   #endif
 
-  // resp.statusCode = 200;
-  // resp.reasonPhrase = "ok";
-  // resp.contentBuff = "test test";
-  // resp.contentSize = strlen(resp.contentBuff);
-  //
-  // respSize = craftResp(&resp, respBuff, WS_BUFF_SIZE, err);
-  // if (err->rc != 0){
-  //   printErr(err);
-  //   freeClient(readBuff, respBuff, &httpReq, err);
-  //   close(argss->socket);
-  //   pthread_exit(NULL);
-  // }
-  //
-  // #ifdef DEBUG
-  // printf("------------ response -------------\n");
-  // printf(respBuff, strlen(respBuff));
-  // printf("------------ response -------------\n");
-  // fflush(stdout);
-  // #endif
 
   for (int i = 0; i < argss->wserver->nRoutes; i++) {
     if (strcmp(argss->wserver->routes[i].path, httpReq.requestUri) == 0) {
+      routeFound = 1;
+      printf("stat code: %i \n", argss->wserver->routes[i].httpResp->contentSize);
 
-      printf("stat code: %i \n", argss->wserver->routes[i].httpResp->statusCode);
+      respSize = craftResp(argss->wserver->routes[i].httpResp, respBuff, WS_BUFF_SIZE, err);
+      if (err->rc != 0){
+        printErr(err);
+        freeClient(readBuff, respBuff, &httpReq, err);
+        close(argss->socket);
+        pthread_exit(NULL);
+      }
 
-      // respSize = craftResp(argss->wserver->routes[i].httpResp, respBuff, WS_BUFF_SIZE, err);
-      // if (err->rc != 0){
-      //   printErr(err);
-      //   freeClient(readBuff, respBuff, &httpReq, err);
-      //   close(argss->socket);
-      //   pthread_exit(NULL);
-      // }
+      sentBuffSize = sendBuffer(argss->socket, respBuff, strlen(respBuff), err);
+      if (err->rc != 0) {
+        printErr(err);
+        freeClient(readBuff, respBuff, &httpReq, err);
+        close(argss->socket);
+        pthread_exit(NULL);
+      }
+    }
+  }
+  if (!routeFound) {
+    setErr(err, "page not found");
+    resp.statusCode = 404;
+    resp.reasonPhrase = "err";
+    resp.contentBuff = err->reason;
+    resp.contentSize = strlen(resp.contentBuff);
+    respSize = craftResp(&resp, respBuff, WS_BUFF_SIZE, err);
+    if (err->rc != 0){
+      printErr(err);
+      freeClient(readBuff, respBuff, &httpReq, err);
+      close(argss->socket);
+      pthread_exit(NULL);
+    }
 
-      // sentBuffSize = sendBuffer(argss->socket, respBuff, strlen(respBuff), err);
-      // if (err->rc != 0) {
-      //   printErr(err);
-      //   freeClient(readBuff, respBuff, &httpReq, err);
-      //   close(argss->socket);
-      //   pthread_exit(NULL);
-      // }
-
+    sentBuffSize = sendBuffer(argss->socket, respBuff, strlen(respBuff), err);
+    if (err->rc != 0) {
+      printErr(err);
+      freeClient(readBuff, respBuff, &httpReq, err);
+      close(argss->socket);
+      pthread_exit(NULL);
     }
   }
 
-
+  #ifdef DEBUG
+  printf("------------ response -------------\n");
+  printf(respBuff, strlen(respBuff));
+  printf("------------ response -------------\n");
+  fflush(stdout);
+  #endif
 
   wsLog("server-response sent \n");
 
@@ -404,7 +399,7 @@ void *clientHandle(void *args) {
 
 void wsListen(webserver *wserver, wsError *err) {
   struct sockaddr_in tempClient;
-  static struct pthreadClientHandleArgs clientArgs = {};
+  struct pthreadClientHandleArgs *clientArgs = (struct pthreadClientHandleArgs *)malloc(sizeof(struct pthreadClientHandleArgs));
 
   wsLog("server listening \n");
 
@@ -425,15 +420,20 @@ void wsListen(webserver *wserver, wsError *err) {
     }
     #endif
 
-    clientArgs.wserver = wserver;
-    clientArgs.socket = newSocket;
-    if(pthread_create(&wserver->clientThreads[wserver->clientIdThreadCounter], NULL, clientHandle, (void*)&clientArgs) != 0 ) {
+    clientArgs->wserver = wserver;
+    clientArgs->socket = newSocket;
+    if(pthread_create(&wserver->clientThreads[wserver->clientIdThreadCounter], NULL, clientHandle, (void*)clientArgs) != 0 ) {
       setErr(err, "thread create error \n");
+      free(clientArgs);
       return;
     } else {
+
+      printf("ccc: %i \n", wserver->routes[0].httpResp->contentSize);
+      printf("sss: %s \n", wserver->routes[0].path);
       wserver->clientIdThreadCounter++;
     }
   }
+  free(clientArgs);
   err->rc = 0;
 }
 
