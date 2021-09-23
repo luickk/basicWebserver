@@ -338,6 +338,9 @@ void *clientHandle(void *args) {
   #endif
 
 
+  printf("rr: %p \n",argss->wserver->routes[0].httpResp);
+  printf("ws: %p \n",argss->wserver);
+
   for (int i = 0; i < argss->wserver->nRoutes; i++) {
     if (strcmp(argss->wserver->routes[i].path, httpReq.requestUri) == 0) {
       routeFound = 1;
@@ -420,7 +423,12 @@ void wsListen(webserver *wserver, wsError *err) {
     }
     #endif
 
+    printf("rr: %p \n",wserver->routes[0].httpResp);
+    printf("ws: %p \n",wserver);
     clientArgs->wserver = wserver;
+    printf("rr: %p \n",wserver->routes[0].httpResp);
+    printf("ws: %p \n",wserver);
+
     clientArgs->socket = newSocket;
     if(pthread_create(&wserver->clientThreads[wserver->clientIdThreadCounter], NULL, clientHandle, (void*)clientArgs) != 0 ) {
       setErr(err, "thread create error \n");
