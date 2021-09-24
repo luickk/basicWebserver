@@ -36,7 +36,7 @@ typedef struct {
   int clientIdThreadCounter;
   pthread_mutex_t mutexLock;
 
-  struct httpRoute *routes;
+  struct httpRoute **routes;
   int nRoutes;
 } webserver;
 
@@ -109,18 +109,20 @@ struct httpRoute *createRoute(char *path, char *method, struct httpResponse *res
   return route;
 }
 
-void freeRoute(struct httpRoute *route) {
-  free(route->httpResp);
-  free(route);
+void freeRoutes(webserver *ws) {
+  for (int i = 0; i < ws->nRoutes; i++) {
+    free(ws->routes[i]->httpResp);
+    free(ws->routes[i]);
+  }
 }
 
 void addRouteToWs(webserver *ws, struct httpRoute *route) {
   if (ws->nRoutes == 0) {
-    ws->routes = (struct httpRoute*)malloc(sizeof(struct httpRoute*));
-    ws->routes[ws->nRoutes] = *route;
+    ws->routes = (struct httpRoute**)malloc(sizeof(struct httpRoute**));
+    ws->routes[ws->nRoutes] = route;
   } else {
-    ws->routes = (struct httpRoute*)realloc(ws->routes, (ws->nRoutes+1)*sizeof(struct httpRoute*));
-    ws->routes[ws->nRoutes] = *route;
+    ws->routes = (struct httpRoute**)realloc(ws->routes, (ws->nRoutes+1)*sizeof(struct httpRoute**));
+    ws->routes[ws->nRoutes] = route;
   }
   ws->nRoutes++;
 }
@@ -337,16 +339,10 @@ void *clientHandle(void *args) {
   printf("------------ parsed request -------------\n");
   #endif
 
-
-  printf("rr: %p \n",argss->wserver->routes[0].httpResp);
-  printf("ws: %p \n",argss->wserver);
-
   for (int i = 0; i < argss->wserver->nRoutes; i++) {
-    if (strcmp(argss->wserver->routes[i].path, httpReq.requestUri) == 0) {
+    if (strcmp(argss->wserver->routes[i]->path, httpReq.requestUri) == 0) {
       routeFound = 1;
-      printf("stat code: %i \n", argss->wserver->routes[i].httpResp->contentSize);
-
-      respSize = craftResp(argss->wserver->routes[i].httpResp, respBuff, WS_BUFF_SIZE, err);
+      respSize = craftResp(argss->wserver->routes[i]->httpResp, respBuff, WS_BUFF_SIZE, err);
       if (err->rc != 0){
         printErr(err);
         freeClient(readBuff, respBuff, &httpReq, err);
@@ -423,11 +419,7 @@ void wsListen(webserver *wserver, wsError *err) {
     }
     #endif
 
-    printf("rr: %p \n",wserver->routes[0].httpResp);
-    printf("ws: %p \n",wserver);
     clientArgs->wserver = wserver;
-    printf("rr: %p \n",wserver->routes[0].httpResp);
-    printf("ws: %p \n",wserver);
 
     clientArgs->socket = newSocket;
     if(pthread_create(&wserver->clientThreads[wserver->clientIdThreadCounter], NULL, clientHandle, (void*)clientArgs) != 0 ) {
@@ -435,14 +427,16 @@ void wsListen(webserver *wserver, wsError *err) {
       free(clientArgs);
       return;
     } else {
-
-      printf("ccc: %i \n", wserver->routes[0].httpResp->contentSize);
-      printf("sss: %s \n", wserver->routes[0].path);
       wserver->clientIdThreadCounter++;
     }
   }
   free(clientArgs);
   err->rc = 0;
+}
+
+void freeWs(webserver *wserver) {
+  freeRoutes(wserver);
+  free(wserver);
 }
 
 /*
@@ -459,22 +453,32 @@ int main() {
   }
   wsLog("server initiated \n");
 
+  struct httpResponse *mainRouteResponse = (struct httpResponse*)malloc(sizeof(struct httpResponse));
+  mainRouteResponse->statusCode = 200;
+  mainRouteResponse->reasonPhrase = "succ";
+  mainRouteResponse->contentBuff = "Hai";
+  mainRouteResponse->contentSize = 3;
+  struct httpRoute *mainRoute = createRoute("/", "GET", mainRouteResponse);
+  addRouteToWs(wserver, mainRoute);
+
   struct httpResponse *routeResponse = (struct httpResponse*)malloc(sizeof(struct httpResponse));
   routeResponse->statusCode = 200;
   routeResponse->reasonPhrase = "succ";
   routeResponse->contentBuff = "lol";
   routeResponse->contentSize = 3;
   struct httpRoute *route = createRoute("/lol", "GET", routeResponse);
-
   addRouteToWs(wserver, route);
 
   wsListen(wserver, err);
   if (err->rc != 0) {
     printErr(err);
+
+    freeWs(wserver);
+    free(err);
     return 1;
   }
 
-  free(wserver);
+  freeWs(wserver);
   free(err);
   return 0;
 }
