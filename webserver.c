@@ -339,6 +339,7 @@ void *clientHandle(void *args) {
   printf("------------ parsed request -------------\n");
   #endif
 
+  pthread_mutex_lock(&argss->wserver->mutexLock);
   for (int i = 0; i < argss->wserver->nRoutes; i++) {
     if (strcmp(argss->wserver->routes[i]->path, httpReq.requestUri) == 0) {
       routeFound = 1;
@@ -359,6 +360,8 @@ void *clientHandle(void *args) {
       }
     }
   }
+  pthread_mutex_unlock(&argss->wserver->mutexLock);
+
   if (!routeFound) {
     setErr(err, "page not found");
     resp.statusCode = 404;
@@ -399,6 +402,11 @@ void *clientHandle(void *args) {
 void wsListen(webserver *wserver, wsError *err) {
   struct sockaddr_in tempClient;
   struct pthreadClientHandleArgs *clientArgs = (struct pthreadClientHandleArgs *)malloc(sizeof(struct pthreadClientHandleArgs));
+
+  if (pthread_mutex_init(&wserver->mutexLock, NULL) != 0) {
+    setErr(err, "mutex init failed \n");
+    return;
+  }
 
   wsLog("server listening \n");
 
