@@ -10,6 +10,8 @@
 
 // #define DEBUG 1
 
+#define LOG_STREAM stdout
+
 #define MAX_CLIENTS 10
 
 #define MAX_HTTP_METHOD_LEN 10
@@ -52,8 +54,8 @@ struct pthreadClientHandleArgs {
 };
 
 struct httpRoute {
-  char *path;
-  char *method;
+  const char *path;
+  const char *method;
   struct httpResponse *httpResp;
 };
 
@@ -72,12 +74,17 @@ struct httpRequest {
   char *requestUri;
 };
 
+// declares&inits error struct and assigns the prefix to the struct
+// returns err struct ref
 wsError* initWsError(char prefix[MAX_ERR_PREFIX_LEN]) {
   wsError *err = (wsError*)malloc(sizeof(wsError));
   strcpy(err->prefix, prefix);
   return err;
 }
 
+// sets passed error struct reason attr to char arr
+// supports format
+// returns modified err struct reference
 void setErr(wsError *err, const char* format, ...) {
   va_list argptr;
   va_start(argptr, format);
@@ -88,19 +95,25 @@ void setErr(wsError *err, const char* format, ...) {
   err->rc = 1;
 }
 
+// prints referenced error struct prefix+reason
 void printErr(wsError *err) {
   fprintf(stderr, "%s %s", err->prefix, err->reason);
 }
 
+// printf's log char arr to given stream
+// supports format
 void wsLog(const char* format, ...) {
   va_list argptr;
   va_start(argptr, format);
-  fprintf(stdout, format, argptr);
+  fprintf(LOG_STREAM, format, argptr);
   va_end(argptr);
   fflush(stdout);
 }
 
-struct httpRoute *createRoute(char *path, char *method, struct httpResponse *resp) {
+// declares&inits route struct
+// defines route struct attr
+// returns reference to route struct
+struct httpRoute *createRoute(const char *path, const char *method, struct httpResponse *resp) {
   struct httpRoute *route = (struct httpRoute*)malloc(sizeof(struct httpRoute));
   route->path = path;
   route->method = method;
@@ -109,13 +122,17 @@ struct httpRoute *createRoute(char *path, char *method, struct httpResponse *res
   return route;
 }
 
+// frees all route structs attributes and struct itsself from webserver struct
 void freeRoutes(webserver *ws) {
   for (int i = 0; i < ws->nRoutes; i++) {
     free(ws->routes[i]->httpResp);
     free(ws->routes[i]);
   }
+  free(ws->routes);
 }
 
+// adds route struct reference to webserver routes pointer arr
+// dynamically re/allocates memory
 void addRouteToWs(webserver *ws, struct httpRoute *route) {
   if (ws->nRoutes == 0) {
     ws->routes = (struct httpRoute**)malloc(sizeof(struct httpRoute**));
@@ -127,7 +144,7 @@ void addRouteToWs(webserver *ws, struct httpRoute *route) {
   ws->nRoutes++;
 }
 
-
+// removes space characters from given string ref
 void removeSpaces(char* str, int strlen) {
   int count = 0;
   for (int i = 0; i <= strlen; i++)
