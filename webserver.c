@@ -122,7 +122,7 @@ struct httpRoute *createRoute(const char *path, const char *method, struct httpR
   return route;
 }
 
-// frees all route structs attributes and struct itsself from webserver struct
+// frees all route structs attributes and struct itself from webserver struct
 void freeRoutes(webserver *ws) {
   for (int i = 0; i < ws->nRoutes; i++) {
     free(ws->routes[i]->httpResp);
@@ -152,6 +152,8 @@ void removeSpaces(char* str, int strlen) {
           str[count++] = str[i];
 }
 
+// sends buffer on given socket
+// returns sent data size
 int sendBuffer(int sock, char *buff, int buffSize, wsError *err) {
   int sendLeft = buffSize;
   int dataSent = 0;
@@ -170,49 +172,74 @@ int sendBuffer(int sock, char *buff, int buffSize, wsError *err) {
   return dataSent;
 }
 
+// prints & flushes buffer to stdout
 void printfBuffer(char *buff, int buffSize) {
   fwrite(buff, buffSize, 1, stdout);
   fflush(stdout);
 }
 
-// crafts response header with stat line and content
-// returns buff used mem size
+// by https://stackoverflow.com/a/3464656, modified
+int readFileToBuffer(char *filename, char *buffer, int bufferSize, wsError *err) {
+   int stringSize, readSize;
+   FILE *handler = fopen(filename, "r");
+
+   if (handler) {
+       fseek(handler, 0, SEEK_END);
+       stringSize = ftell(handler);
+       rewind(handler);
+
+       if (stringSize > bufferSize)
+         setErr(err, "read file exceeds buffer size \n");
+         return 0;
+
+       readSize = fread(buffer, sizeof(char), stringSize, handler);
+       buffer[stringSize] = '\0';
+
+       if (stringSize != readSize)
+         setErr(err, "file read sizes conflict \n");
+         return 0;
+
+       // always remember to close the file
+       fclose(handler);
+    } else {
+      setErr(err, "file open error (file not found?) \n");
+      return 0;
+    }
+    err->rc = 0;
+    return readSize;
+  }
+
+// crafts response with stat line, entity header and content from httpResponse struct
+// puts crafted response into the respBuff
+// returns respBuff size
 int craftResp(struct httpResponse *resp, char *respBuff, int respBuffSize, wsError *err) {
   if (resp->statusCode < 100 || resp->statusCode > 511) {
     setErr(err, "status line resp stat code invlid %i \n", resp->statusCode);
     return 0;
   }
-  char tempBuff[100] = {};
-  int tempSize = 0;
   int size = 0;
-  int respBuffConcat = 0;
 
   // status line
-  tempSize = sprintf(tempBuff, "HTTP/%s %d %s", HTTP_VERSION, resp->statusCode, resp->reasonPhrase);
-  strncat(respBuff, tempBuff, tempSize);
-  strncat(respBuff, "\r\n", 2);
-  size += tempSize+2;
+  size += sprintf(respBuff+size, "HTTP/%s %d %s", HTTP_VERSION, resp->statusCode, resp->reasonPhrase);
+  size += sprintf(respBuff+size, "\r\n");
 
   // entity header
-  tempSize = sprintf(tempBuff, "Content-type: text/html, text, plain");
-  strncat(respBuff, tempBuff, tempSize);
-  strncat(respBuff, "\r\n", 2);
-  size += tempSize+2;
+  size += sprintf(respBuff+size, "Content-type: text/html, text, plain");
+  size += sprintf(respBuff+size, "\r\n");
 
-  tempSize = sprintf(tempBuff, "Content-length: %d", resp->contentSize);
-  strncat(respBuff, tempBuff, tempSize);
-  strncat(respBuff, "\r\n", 2);
-  size += tempSize+2;
+  size += sprintf(respBuff+size, "Content-length: %d", resp->contentSize);
+  size += sprintf(respBuff+size, "\r\n");
 
   // content
-  strncat(respBuff, "\r\n", 2);
+  size += sprintf(respBuff+size, "\r\n");
   strncat(respBuff, resp->contentBuff, resp->contentSize);
-  size += resp->contentSize+2;
 
   err->rc = 0;
   return size;
 }
 
+// parses incoming httpRequest from reqBuff to the httpRequest struct
+// returns reqBuffSize size
 int parseHttpRequest(struct httpRequest *req, char *reqBuff, int reqBuffSize, wsError *err) {
   #ifdef DEBUG
   printf("------------ request -------------\n");
@@ -237,7 +264,6 @@ int parseHttpRequest(struct httpRequest *req, char *reqBuff, int reqBuffSize, ws
       }
       switch (iElement) {
         case 0:
-          // TODO -> free req
           req->reqMethod = (char*)malloc(iElementSize);
           memcpy(req->reqMethod, reqBuff+iElementUsedMem, iElementSize);
           for (int i = 0; i<(sizeof(httpMethods)/MAX_HTTP_METHOD_LEN); i++) {
@@ -255,6 +281,7 @@ int parseHttpRequest(struct httpRequest *req, char *reqBuff, int reqBuffSize, ws
           break;
         case 2:
           // extracing version number - http/x.x
+          // strtok directly used on reqBuff since it is the last parsed element
           tok = strtok(reqBuff+iElementUsedMem, "/");
           tok = strtok(NULL, "/");
           req->httpVersion = atof(tok);
@@ -272,6 +299,8 @@ int parseHttpRequest(struct httpRequest *req, char *reqBuff, int reqBuffSize, ws
   return iElementUsedMem;
 }
 
+// inits the webserver struct on given port
+// binds & starts listening on webserver Socket
 void wsInit(webserver *wserver, int port, wsError *err) {
   wserver->port = port;
 
@@ -303,6 +332,7 @@ void wsInit(webserver *wserver, int port, wsError *err) {
   err->rc = 0;
 }
 
+// frees all allocated memory from the clientHandle thread
 void freeClient(char *readBuff, char *respBuff, struct httpRequest *httpReq, wsError *err) {
   free(readBuff);
   free(respBuff);
@@ -311,6 +341,8 @@ void freeClient(char *readBuff, char *respBuff, struct httpRequest *httpReq, wsE
   free(err);
 }
 
+// the clientHandle thread, waits for incoming request and delivers the reply accordingly
+// quits thread after reply and does not continue to reply to multiple requests on one connection. does not support persistent connections
 void *clientHandle(void *args) {
   struct pthreadClientHandleArgs *argss = (struct pthreadClientHandleArgs*)args;
   wsError *err = initWsError("error(clientHandle)->");
@@ -416,6 +448,7 @@ void *clientHandle(void *args) {
   pthread_exit(NULL);
 }
 
+// waits for new incoming connections on port and creates clientHandles threads accordingly
 void wsListen(webserver *wserver, wsError *err) {
   struct sockaddr_in tempClient;
   struct pthreadClientHandleArgs *clientArgs = (struct pthreadClientHandleArgs *)malloc(sizeof(struct pthreadClientHandleArgs));
@@ -459,6 +492,7 @@ void wsListen(webserver *wserver, wsError *err) {
   err->rc = 0;
 }
 
+// frees the webserver struct and all allocated attributes
 void freeWs(webserver *wserver) {
   freeRoutes(wserver);
   free(wserver);
