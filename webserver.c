@@ -179,35 +179,34 @@ void printfBuffer(char *buff, int buffSize) {
 }
 
 // by https://stackoverflow.com/a/3464656, modified
-int readFileToBuffer(char *filename, char *buffer, int bufferSize, wsError *err) {
-   int stringSize, readSize;
-   FILE *handler = fopen(filename, "r");
+int readFileToBuffer(char *filename, char *buffer, wsError *err) {
+  int stringSize, readSize;
+  FILE *handler = fopen(filename, "r");
 
-   if (handler) {
-       fseek(handler, 0, SEEK_END);
-       stringSize = ftell(handler);
-       rewind(handler);
+  if (handler) {
+    fseek(handler, 0, SEEK_END);
+    stringSize = ftell(handler);
+    rewind(handler);
 
-       if (stringSize > bufferSize)
-         setErr(err, "read file exceeds buffer size \n");
-         return 0;
+    buffer = (char*)malloc(sizeof(char)*(stringSize+1));
 
-       readSize = fread(buffer, sizeof(char), stringSize, handler);
-       buffer[stringSize] = '\0';
+    readSize = fread(buffer, sizeof(char), stringSize, handler);
+    buffer[stringSize] = '\0';
 
-       if (stringSize != readSize)
-         setErr(err, "file read sizes conflict \n");
-         return 0;
-
-       // always remember to close the file
-       fclose(handler);
-    } else {
-      setErr(err, "file open error (file not found?) \n");
+    if (stringSize != readSize) {
+      setErr(err, "file read sizes conflict \n");
       return 0;
     }
-    err->rc = 0;
-    return readSize;
+
+    // always remember to close the file
+    fclose(handler);
+  } else {
+    setErr(err, "file open error (file not found?) \n");
+    return 0;
   }
+  err->rc = 0;
+  return readSize;
+}
 
 // crafts response with stat line, entity header and content from httpResponse struct
 // puts crafted response into the respBuff
@@ -520,11 +519,23 @@ int main() {
   struct httpRoute *mainRoute = createRoute("/", "GET", mainRouteResponse);
   addRouteToWs(wserver, mainRoute);
 
+
   struct httpResponse *routeResponse = (struct httpResponse*)malloc(sizeof(struct httpResponse));
   routeResponse->statusCode = 200;
   routeResponse->reasonPhrase = "succ";
-  routeResponse->contentBuff = "lol";
-  routeResponse->contentSize = 3;
+  routeResponse->contentSize = readFileToBuffer("../lol.html", routeResponse->contentBuff, err);
+  if (err->rc != 0) {
+    printErr(err);
+
+    freeWs(wserver);
+    free(err);
+    return 1;
+  }
+
+  printf("buffer: %i \n", routeResponse->contentSize);
+  printf("adss: %i \n", routeResponse->contentBuff[0]);
+  // printfBuffer(routeResponse->contentBuff, routeResponse->contentSize);
+
   struct httpRoute *route = createRoute("/lol", "GET", routeResponse);
   addRouteToWs(wserver, route);
 
