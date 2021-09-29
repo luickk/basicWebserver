@@ -188,8 +188,7 @@ int readFileToBuffer(char *filename, char *buffer, wsError *err) {
     stringSize = ftell(handler);
     rewind(handler);
 
-    buffer = (char*)malloc(sizeof(char)*(stringSize+1));
-
+    buffer = (char*)malloc(sizeof(char)*stringSize+1);
     readSize = fread(buffer, sizeof(char), stringSize, handler);
     buffer[stringSize] = '\0';
 
@@ -533,8 +532,7 @@ int main() {
   }
 
   printf("buffer: %i \n", routeResponse->contentSize);
-  printf("adss: %i \n", routeResponse->contentBuff[0]);
-  // printfBuffer(routeResponse->contentBuff, routeResponse->contentSize);
+  printf("adss: %s \n", routeResponse->contentBuff);
 
   struct httpRoute *route = createRoute("/lol", "GET", routeResponse);
   addRouteToWs(wserver, route);
