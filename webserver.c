@@ -1,4 +1,4 @@
-#include <sys/socket.h>
+ #include <sys/socket.h>
 #include <netdb.h>
 #include <stdio.h>
 #include <stdarg.h>
@@ -65,6 +65,7 @@ struct httpResponse {
   int statusCode;
   char *reasonPhrase;
   char *contentBuff;
+  int isFile;
   int contentSize;
 };
 
@@ -125,6 +126,9 @@ struct httpRoute *createRoute(const char *path, const char *method, struct httpR
 // frees all route structs attributes and struct itself from webserver struct
 void freeRoutes(webserver *ws) {
   for (int i = 0; i < ws->nRoutes; i++) {
+    if (ws->routes[i]->httpResp->isFile) {
+      free(ws->routes[i]->httpResp->contentBuff);
+    }
     free(ws->routes[i]->httpResp);
     free(ws->routes[i]);
   }
@@ -179,9 +183,10 @@ void printfBuffer(char *buff, int buffSize) {
 }
 
 // by https://stackoverflow.com/a/3464656, modified
-int readFileToBuffer(char *filename, char *buffer, wsError *err) {
+char *readFileToBuffer(char *filename, int *size, wsError *err) {
   int stringSize, readSize;
   FILE *handler = fopen(filename, "r");
+  char *buffer;
 
   if (handler) {
     fseek(handler, 0, SEEK_END);
@@ -190,21 +195,22 @@ int readFileToBuffer(char *filename, char *buffer, wsError *err) {
 
     buffer = (char*)malloc(sizeof(char)*stringSize+1);
     readSize = fread(buffer, sizeof(char), stringSize, handler);
-    buffer[stringSize] = '\0';
+    buffer[readSize] = 0;
 
     if (stringSize != readSize) {
       setErr(err, "file read sizes conflict \n");
-      return 0;
+      return NULL;
     }
 
     // always remember to close the file
     fclose(handler);
   } else {
     setErr(err, "file open error (file not found?) \n");
-    return 0;
+    return NULL;
   }
   err->rc = 0;
-  return readSize;
+  *size = readSize;
+  return buffer;
 }
 
 // crafts response with stat line, entity header and content from httpResponse struct
@@ -339,8 +345,8 @@ void freeClient(char *readBuff, char *respBuff, struct httpRequest *httpReq, wsE
   free(err);
 }
 
-// the clientHandle thread, waits for incoming request and delivers the reply accordingly
-// quits thread after reply and does not continue to reply to multiple requests on one connection. does not support persistent connections
+// the clientHandle thread waits for incoming request and crafts the reply accordingly
+// quits thread after reply/ does not continue to reply to multiple requests on one connection. does not support persistent connections
 void *clientHandle(void *args) {
   struct pthreadClientHandleArgs *argss = (struct pthreadClientHandleArgs*)args;
   wsError *err = initWsError("error(clientHandle)->");
@@ -446,7 +452,7 @@ void *clientHandle(void *args) {
   pthread_exit(NULL);
 }
 
-// waits for new incoming connections on port and creates clientHandles threads accordingly
+// waits for new incoming connections on port x and creates clientHandles threads accordingly
 void wsListen(webserver *wserver, wsError *err) {
   struct sockaddr_in tempClient;
   struct pthreadClientHandleArgs *clientArgs = (struct pthreadClientHandleArgs *)malloc(sizeof(struct pthreadClientHandleArgs));
@@ -467,7 +473,7 @@ void wsListen(webserver *wserver, wsError *err) {
     wsLog("new client connected \n");
 
     #ifdef DEBUG
-    // telling the kernel to that the socket is reused - only for debugging purposes
+    // telling the kernel that the socket is reused - only for debugging purposes
     int yes=1;
     if (setsockopt(newSocket, SOL_SOCKET, SO_REUSEADDR, &yes, sizeof(yes)) == -1) {
         setErr(err, "(debug flag set) socket reuse set failed \n");
@@ -522,18 +528,15 @@ int main() {
   struct httpResponse *routeResponse = (struct httpResponse*)malloc(sizeof(struct httpResponse));
   routeResponse->statusCode = 200;
   routeResponse->reasonPhrase = "succ";
-  routeResponse->contentSize = readFileToBuffer("../lol.html", routeResponse->contentBuff, err);
+  // by marking it as file the dynamically allocated memory from the file buffer gets freed
+  routeResponse->isFile = 1;
+  routeResponse->contentBuff = readFileToBuffer("../lol.html", &routeResponse->contentSize, err);
   if (err->rc != 0) {
     printErr(err);
-
     freeWs(wserver);
     free(err);
     return 1;
   }
-
-  printf("buffer: %i \n", routeResponse->contentSize);
-  printf("adss: %s \n", routeResponse->contentBuff);
-
   struct httpRoute *route = createRoute("/lol", "GET", routeResponse);
   addRouteToWs(wserver, route);
 
