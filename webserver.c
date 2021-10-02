@@ -31,15 +31,15 @@
 #define WS_BUFF_SIZE 1024
 
 typedef struct {
+  pthread_mutex_t mutexLock;
   unsigned short port;
   struct sockaddr_in server;
   int wserverSocket;
   pthread_t clientThreads[MAX_CLIENTS];
   int clientIdThreadCounter;
-  pthread_mutex_t mutexLock;
+  int nRoutes;
 
   struct httpRoute **routes;
-  int nRoutes;
 } webserver;
 
 typedef struct {
@@ -349,6 +349,10 @@ void freeClient(char *readBuff, char *respBuff, struct httpRequest *httpReq, wsE
 // quits thread after reply/ does not continue to reply to multiple requests on one connection. does not support persistent connections
 void *clientHandle(void *args) {
   struct pthreadClientHandleArgs *argss = (struct pthreadClientHandleArgs*)args;
+  pthread_mutex_lock(&argss->wserver->mutexLock);
+  int socket = argss->socket;
+  pthread_mutex_unlock(&argss->wserver->mutexLock);
+
   wsError *err = initWsError("error(clientHandle)->");
 
   char *readBuff = (char*)malloc(WS_BUFF_SIZE);
@@ -360,7 +364,7 @@ void *clientHandle(void *args) {
 
   wsLog("new client thread created \n");
 
-  int readBuffSize = read(argss->socket, readBuff, WS_BUFF_SIZE);
+  int readBuffSize = read(socket, readBuff, WS_BUFF_SIZE);
 
   // sec checks
   if (readBuffSize >= WS_BUFF_SIZE) {
@@ -371,16 +375,18 @@ void *clientHandle(void *args) {
   if (readBuff[readBuffSize] != (char)0) {
     setErr(err, "http req invalid \n");
     printErr(err);
+
+    close(socket);
+
     freeClient(readBuff, respBuff, &httpReq, err);
-    close(argss->socket);
     pthread_exit(NULL);
   }
 
   reqSize = parseHttpRequest(&httpReq, readBuff, readBuffSize, err);
   if (err->rc != 0){
     printErr(err);
+    close(socket);
     freeClient(readBuff, respBuff, &httpReq, err);
-    close(argss->socket);
     pthread_exit(NULL);
   }
 
@@ -400,15 +406,15 @@ void *clientHandle(void *args) {
       if (err->rc != 0){
         printErr(err);
         freeClient(readBuff, respBuff, &httpReq, err);
-        close(argss->socket);
+        close(socket);
         pthread_exit(NULL);
       }
 
-      sentBuffSize = sendBuffer(argss->socket, respBuff, strlen(respBuff), err);
+      sentBuffSize = sendBuffer(socket, respBuff, strlen(respBuff), err);
       if (err->rc != 0) {
         printErr(err);
         freeClient(readBuff, respBuff, &httpReq, err);
-        close(argss->socket);
+        close(socket);
         pthread_exit(NULL);
       }
     }
@@ -425,15 +431,17 @@ void *clientHandle(void *args) {
     if (err->rc != 0){
       printErr(err);
       freeClient(readBuff, respBuff, &httpReq, err);
-      close(argss->socket);
+      close(socket);
       pthread_exit(NULL);
     }
 
-    sentBuffSize = sendBuffer(argss->socket, respBuff, strlen(respBuff), err);
+    sentBuffSize = sendBuffer(socket, respBuff, strlen(respBuff), err);
     if (err->rc != 0) {
       printErr(err);
+
+      close(socket);
+
       freeClient(readBuff, respBuff, &httpReq, err);
-      close(argss->socket);
       pthread_exit(NULL);
     }
   }
@@ -448,7 +456,7 @@ void *clientHandle(void *args) {
   wsLog("server-response sent \n");
 
   freeClient(readBuff, respBuff, &httpReq, err);
-  close(argss->socket);
+  close(socket);
   pthread_exit(NULL);
 }
 
