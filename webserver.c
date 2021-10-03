@@ -12,7 +12,7 @@
 
 #define LOG_STREAM stdout
 
-#define MAX_CLIENTS 10
+#define MAX_CLIENTS 500
 
 #define MAX_HTTP_METHOD_LEN 10
 
@@ -35,10 +35,10 @@ typedef struct {
   unsigned short port;
   struct sockaddr_in server;
   int wserverSocket;
-  pthread_t clientThreads[MAX_CLIENTS];
   int clientIdThreadCounter;
   int nRoutes;
 
+  pthread_t *clientThreads;
   struct httpRoute **routes;
 } webserver;
 
@@ -75,10 +75,12 @@ struct httpRequest {
   char *requestUri;
 };
 
+int stopSig = 0;
+
 // declares&inits error struct and assigns the prefix to the struct
 // returns err struct ref
 wsError* initWsError(char prefix[MAX_ERR_PREFIX_LEN]) {
-  wsError *err = (wsError*)malloc(sizeof(wsError));
+  wsError *err = malloc(sizeof *err);
   strcpy(err->prefix, prefix);
   return err;
 }
@@ -115,7 +117,7 @@ void wsLog(const char* format, ...) {
 // defines route struct attr
 // returns reference to route struct
 struct httpRoute *createRoute(const char *path, const char *method, struct httpResponse *resp) {
-  struct httpRoute *route = (struct httpRoute*)malloc(sizeof(struct httpRoute));
+  struct httpRoute *route = malloc(sizeof *route);
   route->path = path;
   route->method = method;
   route->httpResp = resp;
@@ -139,7 +141,7 @@ void freeRoutes(webserver *ws) {
 // dynamically re/allocates memory
 void addRouteToWs(webserver *ws, struct httpRoute *route) {
   if (ws->nRoutes == 0) {
-    ws->routes = (struct httpRoute**)malloc(sizeof(struct httpRoute**));
+    ws->routes = malloc(sizeof *ws->routes);
     ws->routes[ws->nRoutes] = route;
   } else {
     ws->routes = (struct httpRoute**)realloc(ws->routes, (ws->nRoutes+1)*sizeof(struct httpRoute**));
@@ -193,7 +195,7 @@ char *readFileToBuffer(char *filename, int *size, wsError *err) {
     stringSize = ftell(handler);
     rewind(handler);
 
-    buffer = (char*)malloc(sizeof(char)*stringSize+1);
+    buffer = malloc(sizeof(char) *stringSize+1);
     readSize = fread(buffer, sizeof(char), stringSize, handler);
     buffer[readSize] = 0;
 
@@ -268,7 +270,7 @@ int parseHttpRequest(struct httpRequest *req, char *reqBuff, int reqBuffSize, ws
       }
       switch (iElement) {
         case 0:
-          req->reqMethod = (char*)malloc(iElementSize);
+          req->reqMethod = malloc(sizeof(char)*iElementSize);
           memcpy(req->reqMethod, reqBuff+iElementUsedMem, iElementSize);
           for (int i = 0; i<(sizeof(httpMethods)/MAX_HTTP_METHOD_LEN); i++) {
             if (strcmp(req->reqMethod, httpMethods[i]) == 0)
@@ -279,7 +281,7 @@ int parseHttpRequest(struct httpRequest *req, char *reqBuff, int reqBuffSize, ws
           }
           break;
         case 1:
-          req->requestUri = (char*)malloc(iElementSize);
+          req->requestUri = malloc(sizeof(char)*iElementSize);
           memcpy(req->requestUri, reqBuff+iElementUsedMem, iElementSize);
           removeSpaces(req->requestUri, iElementSize);
           break;
@@ -355,8 +357,8 @@ void *clientHandle(void *args) {
 
   wsError *err = initWsError("error(clientHandle)->");
 
-  char *readBuff = (char*)malloc(WS_BUFF_SIZE);
-  char *respBuff = (char*)malloc(WS_BUFF_SIZE);
+  char *readBuff = malloc(sizeof(char)*WS_BUFF_SIZE);
+  char *respBuff = malloc(sizeof(char)*WS_BUFF_SIZE);
   struct httpRequest httpReq = {};
   struct httpResponse resp = {};
   int respSize, reqSize, sentBuffSize;
@@ -375,9 +377,7 @@ void *clientHandle(void *args) {
   if (readBuff[readBuffSize] != (char)0) {
     setErr(err, "http req invalid \n");
     printErr(err);
-
     close(socket);
-
     freeClient(readBuff, respBuff, &httpReq, err);
     pthread_exit(NULL);
   }
@@ -463,7 +463,7 @@ void *clientHandle(void *args) {
 // waits for new incoming connections on port x and creates clientHandles threads accordingly
 void wsListen(webserver *wserver, wsError *err) {
   struct sockaddr_in tempClient;
-  struct pthreadClientHandleArgs *clientArgs = (struct pthreadClientHandleArgs *)malloc(sizeof(struct pthreadClientHandleArgs));
+  struct pthreadClientHandleArgs *clientArgs = malloc(sizeof *clientArgs);
 
   if (pthread_mutex_init(&wserver->mutexLock, NULL) != 0) {
     setErr(err, "mutex init failed \n");
@@ -474,7 +474,7 @@ void wsListen(webserver *wserver, wsError *err) {
 
   int newSocket;
   socklen_t addr_size;
-  while(1)
+  while(!stopSig)
   {
     addr_size = sizeof tempClient;
     newSocket = accept(wserver->wserverSocket, (struct sockaddr *) &tempClient, &addr_size);
@@ -490,14 +490,20 @@ void wsListen(webserver *wserver, wsError *err) {
     #endif
 
     clientArgs->wserver = wserver;
-
     clientArgs->socket = newSocket;
+
+    if (wserver->clientIdThreadCounter == 0) {
+      wserver->clientThreads = malloc(sizeof *wserver->clientThreads);
+    } else {
+      wserver->clientThreads = realloc(wserver->clientThreads, sizeof(pthread_t)*(wserver->clientIdThreadCounter+1));
+    }
     if(pthread_create(&wserver->clientThreads[wserver->clientIdThreadCounter], NULL, clientHandle, (void*)clientArgs) != 0 ) {
       setErr(err, "thread create error \n");
       free(clientArgs);
       return;
     } else {
       wserver->clientIdThreadCounter++;
+      printf("amount: %i \n", wserver->clientIdThreadCounter);
     }
   }
   free(clientArgs);
@@ -507,7 +513,15 @@ void wsListen(webserver *wserver, wsError *err) {
 // frees the webserver struct and all allocated attributes
 void freeWs(webserver *wserver) {
   freeRoutes(wserver);
+  free(wserver->clientThreads);
   free(wserver);
+}
+
+// signal handler
+// signals equal to ctrl-c ctrl-/
+void sigHandler(int signo) {
+  printf("received SIGQUIT or SIGINT \n");
+  stopSig = 1;
 }
 
 /*
@@ -515,7 +529,7 @@ void freeWs(webserver *wserver) {
  */
 int main() {
   wsError *err = initWsError("error(server)->");
-  webserver *wserver = (webserver *)malloc(sizeof(webserver));
+  webserver *wserver = malloc(sizeof *wserver);
 
   wsInit(wserver, 80, err);
   if (err->rc != 0) {
@@ -524,7 +538,13 @@ int main() {
   }
   wsLog("server initiated \n");
 
-  struct httpResponse *mainRouteResponse = (struct httpResponse*)malloc(sizeof(struct httpResponse));
+  //these if statement catch errors
+  if (signal(SIGINT, sigHandler) == SIG_ERR || signal(SIGQUIT, sigHandler) == SIG_ERR) {
+    setErr(err, "couldn't catch SIGnal \n");
+    printErr(err);
+  }
+
+  struct httpResponse *mainRouteResponse = malloc(sizeof *mainRouteResponse);
   mainRouteResponse->statusCode = 200;
   mainRouteResponse->reasonPhrase = "succ";
   mainRouteResponse->contentBuff = "Hai";
@@ -533,7 +553,7 @@ int main() {
   addRouteToWs(wserver, mainRoute);
 
 
-  struct httpResponse *routeResponse = (struct httpResponse*)malloc(sizeof(struct httpResponse));
+  struct httpResponse *routeResponse = malloc(sizeof *routeResponse);
   routeResponse->statusCode = 200;
   routeResponse->reasonPhrase = "succ";
   // by marking it as file the dynamically allocated memory from the file buffer gets freed
