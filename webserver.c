@@ -7,28 +7,32 @@
 #include <pthread.h>
 #include <unistd.h>
 #include <assert.h>
+#include <signal.h>
 
 // #define DEBUG 1
 
+// defines version contained within the client reply
+#define HTTP_VERSION "1.0"
+
+// defines used logstream
 #define LOG_STREAM stdout
 
-#define MAX_CLIENTS 500
+// client request buffer size
+#define WS_BUFF_SIZE 1024
 
+// logging and static len vars
 #define MAX_HTTP_METHOD_LEN 10
-
 #define MAX_ERR_REASON_LEN 100
 #define MAX_ERR_PREFIX_LEN 40
 
+// important string parsing literals
 #define CR 0x0D
 #define LF 0x0A
 #define SP 0x20
 
+// parsing consts
 #define HTTP_REQ_LINE_LEN 3
 
-#define HTTP_VERSION "1.1"
-#define WS_VERSION "1.0"
-
-#define WS_BUFF_SIZE 1024
 
 typedef struct {
   pthread_mutex_t mutexLock;
@@ -74,8 +78,6 @@ struct httpRequest {
   float httpVersion;
   char *requestUri;
 };
-
-int stopSig = 0;
 
 // declares&inits error struct and assigns the prefix to the struct
 // returns err struct ref
@@ -474,10 +476,15 @@ void wsListen(webserver *wserver, wsError *err) {
 
   int newSocket;
   socklen_t addr_size;
-  while(!stopSig)
+  while(1)
   {
     addr_size = sizeof tempClient;
     newSocket = accept(wserver->wserverSocket, (struct sockaddr *) &tempClient, &addr_size);
+    if (newSocket == -1) {
+      setErr(err, "tcp accept error \n");
+      free(clientArgs);
+      return;
+    }
     wsLog("new client connected \n");
 
     #ifdef DEBUG
@@ -503,7 +510,9 @@ void wsListen(webserver *wserver, wsError *err) {
       return;
     } else {
       wserver->clientIdThreadCounter++;
-      printf("amount: %i \n", wserver->clientIdThreadCounter);
+      if (wserver->clientIdThreadCounter >= 5) {
+        break;
+      }
     }
   }
   free(clientArgs);
@@ -515,13 +524,6 @@ void freeWs(webserver *wserver) {
   freeRoutes(wserver);
   free(wserver->clientThreads);
   free(wserver);
-}
-
-// signal handler
-// signals equal to ctrl-c ctrl-/
-void sigHandler(int signo) {
-  printf("received SIGQUIT or SIGINT \n");
-  stopSig = 1;
 }
 
 /*
@@ -538,12 +540,6 @@ int main() {
   }
   wsLog("server initiated \n");
 
-  //these if statement catch errors
-  if (signal(SIGINT, sigHandler) == SIG_ERR || signal(SIGQUIT, sigHandler) == SIG_ERR) {
-    setErr(err, "couldn't catch SIGnal \n");
-    printErr(err);
-  }
-
   struct httpResponse *mainRouteResponse = malloc(sizeof *mainRouteResponse);
   mainRouteResponse->statusCode = 200;
   mainRouteResponse->reasonPhrase = "succ";
@@ -556,7 +552,7 @@ int main() {
   struct httpResponse *routeResponse = malloc(sizeof *routeResponse);
   routeResponse->statusCode = 200;
   routeResponse->reasonPhrase = "succ";
-  // by marking it as file the dynamically allocated memory from the file buffer gets freed
+  // by marking it as file, the dynamically allocated memory from the file buffer gets freed
   routeResponse->isFile = 1;
   routeResponse->contentBuff = readFileToBuffer("../lol.html", &routeResponse->contentSize, err);
   if (err->rc != 0) {
