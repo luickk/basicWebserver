@@ -376,7 +376,7 @@ void *clientHandle(void *args) {
     printErr(err);
     pthread_exit(NULL);
   }
-  if (readBuff[readBuffSize] != (char)0) {
+  if (readBuff[readBuffSize] != (char)0) {+
     setErr(err, "http req invalid \n");
     printErr(err);
     close(socket);
@@ -510,9 +510,9 @@ void wsListen(webserver *wserver, wsError *err) {
       return;
     } else {
       wserver->clientIdThreadCounter++;
-      if (wserver->clientIdThreadCounter >= 5) {
-        break;
-      }
+      // if (wserver->clientIdThreadCounter >= 5) {
+      //   break;
+      // }
     }
   }
   free(clientArgs);
