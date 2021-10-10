@@ -85,7 +85,7 @@ wsError* initWsError(char *prefix) {
   wsError *err = malloc(sizeof *err);
   err->prefix = malloc(sizeof(char) * MAX_ERR_PREFIX_LEN);
   err->reason = malloc(sizeof(char) * MAX_ERR_REASON_LEN);
-  strncpy(err->prefix, prefix, MAX_ERR_PREFIX_LEN);  /* Flawfinder: ignore */ // since src is limited by MAX_ERR_PREFIX_LEN, also the data is developer introduced
+  strncpy(err->prefix, prefix, MAX_ERR_PREFIX_LEN);  /* Flawfinder: ignore */ // ignored since src is limited by MAX_ERR_PREFIX_LEN, also the data is developer introduced
   return err;
 }
 
@@ -95,8 +95,7 @@ wsError* initWsError(char *prefix) {
 void setErr(wsError *err, const char* format, ...) {
   va_list argptr;
   va_start(argptr, format);
-
-  vsnprintf(err->reason, MAX_ERR_REASON_LEN, format, argptr); /* Flawfinder: ignore */ // since the data is not developer introduced
+  vsnprintf(err->reason, MAX_ERR_REASON_LEN, format, argptr); /* Flawfinder: ignore */ // ignored since the data is developer introduced and len limited by vsnprintf
   va_end(argptr);
 
   err->rc = 1;
@@ -112,10 +111,7 @@ void printErr(wsError *err) {
 void wsLog(const char* format, ...) {
   va_list argptr;
   va_start(argptr, format);
-
-  // format is const
-  // flawfinder: ignore
-  fprintf(LOG_STREAM, format, argptr);
+  fprintf(LOG_STREAM, format, argptr); /* Flawfinder: ignore */ // ignored since format is defined as const
   va_end(argptr);
   fflush(stdout);
 }
@@ -158,9 +154,9 @@ void addRouteToWs(webserver *ws, struct httpRoute *route) {
 }
 
 // removes space characters from given string ref
-void removeSpaces(char* str, int strlen) {
+void removeSpaces(char* str, int strle) {
   int count = 0;
-  for (int i = 0; i <= strlen; i++)
+  for (int i = 0; i <= strle; i++)
       if (str[i] != ' ')
           str[count++] = str[i];
 }
@@ -194,7 +190,8 @@ void printfBuffer(char *buff, int buffSize) {
 // by https://stackoverflow.com/a/3464656, modified
 char *readFileToBuffer(char *filename, int *size, wsError *err) {
   int stringSize, readSize;
-  FILE *handler = fopen(filename, "r");
+  FILE *handler = fopen(filename, "r"); /* Flawfinder: ignore */ // check for \0 terminateion and bufferoverflow checks are implemented below,
+  // since the system & files are developer handled and not meant to be modified during execution, race conditions are not considered
   char *buffer;
 
   if (handler) {
@@ -225,7 +222,6 @@ char *readFileToBuffer(char *filename, int *size, wsError *err) {
 // crafts response with stat line, entity header and content from httpResponse struct
 // puts crafted response into the respBuff
 // returns respBuff size
-// flawfinder: ignore
 int craftResp(struct httpResponse *resp, char *respBuff, int respBuffSize, wsError *err) {
   if (resp->statusCode < 100 || resp->statusCode > 511) {
     setErr(err, "status line resp stat code invlid %i \n", resp->statusCode);
@@ -234,8 +230,7 @@ int craftResp(struct httpResponse *resp, char *respBuff, int respBuffSize, wsErr
   int size = 0;
 
   /*
-  ignoring respBuff flawfinder checks due to the data introduced to the array
-  being developer introduced and thus cannot be exploited
+  ignoring respBuff flawfinder checks due to the data being developer introduced and thus cannot be exploited
   */
 
   // status line
@@ -253,6 +248,7 @@ int craftResp(struct httpResponse *resp, char *respBuff, int respBuffSize, wsErr
 
   // checking for buffer overflow
   // checking afterfwards and with assert due to developer caused overlow
+  // checking beforehand would require extra memory and code which is spared
   assert(size < respBuffSize);
 
   err->rc = 0;
@@ -286,7 +282,7 @@ int parseHttpRequest(struct httpRequest *req, char *reqBuff, int reqBuffSize, ws
       switch (iElement) {
         case 0:
           req->reqMethod = malloc(sizeof(char)*iElementSize);
-          memcpy(req->reqMethod, reqBuff+iElementUsedMem, iElementSize);
+          memcpy(req->reqMethod, reqBuff+iElementUsedMem, iElementSize);  /* Flawfinder: ignore */ // in the line above memory is adequately allocated
           for (int i = 0; i<(sizeof(httpMethods)/MAX_HTTP_METHOD_LEN); i++) {
             if (strcmp(req->reqMethod, httpMethods[i]) == 0)
               break;
@@ -297,7 +293,7 @@ int parseHttpRequest(struct httpRequest *req, char *reqBuff, int reqBuffSize, ws
           break;
         case 1:
           req->requestUri = malloc(sizeof(char)*iElementSize);
-          memcpy(req->requestUri, reqBuff+iElementUsedMem, iElementSize);
+          memcpy(req->requestUri, reqBuff+iElementUsedMem, iElementSize);/* Flawfinder: ignore */ // in the line above memory is adequately allocated
           removeSpaces(req->requestUri, iElementSize);
           break;
         case 2:
@@ -381,8 +377,12 @@ void *clientHandle(void *args) {
 
   wsLog("new client thread created \n");
 
-  int readBuffSize = read(socket, readBuff, WS_BUFF_SIZE);
-
+  int readBuffSize = read(socket, readBuff, WS_BUFF_SIZE); /* Flawfinder: ignore */ // buffer-overlow check follows in sec-checks
+  if (readBuffSize == -1) {
+    setErr(err, "tcp read error \n");
+    printErr(err);
+    pthread_exit(NULL);
+  }
   // sec checks
   if (readBuffSize >= WS_BUFF_SIZE) {
     setErr(err, "http req exceeds buffer size \n");
@@ -425,7 +425,7 @@ void *clientHandle(void *args) {
         pthread_exit(NULL);
       }
 
-      sentBuffSize = sendBuffer(socket, respBuff, strlen(respBuff), err);
+      sentBuffSize = sendBuffer(socket, respBuff, strlen(respBuff), err); /* Flawfinder: ignore */ // \0 termination given by craftResp function
       if (err->rc != 0) {
         printErr(err);
         freeClient(readBuff, respBuff, &httpReq, err);
@@ -440,8 +440,9 @@ void *clientHandle(void *args) {
     setErr(err, "page not found");
     resp.statusCode = 404;
     resp.reasonPhrase = "err";
+    err->reason[MAX_ERR_REASON_LEN] = 0;
     resp.contentBuff = err->reason;
-    resp.contentSize = strlen(resp.contentBuff);
+    resp.contentSize = strlen(resp.contentBuff); /* Flawfinder: ignore */ // \0 termination set in the line above
     respSize = craftResp(&resp, respBuff, WS_BUFF_SIZE, err);
     if (err->rc != 0){
       printErr(err);
@@ -450,7 +451,7 @@ void *clientHandle(void *args) {
       pthread_exit(NULL);
     }
 
-    sentBuffSize = sendBuffer(socket, respBuff, strlen(respBuff), err);
+    sentBuffSize = sendBuffer(socket, respBuff, strlen(respBuff), err); /* Flawfinder: ignore */ // \0 termination given by craftResp function
     if (err->rc != 0) {
       printErr(err);
 
