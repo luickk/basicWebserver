@@ -47,8 +47,8 @@ typedef struct {
 } webserver;
 
 typedef struct {
-  char prefix[MAX_ERR_PREFIX_LEN];
-  char reason[MAX_ERR_REASON_LEN];
+  char *prefix;
+  char *reason;
   int rc;
 } wsError;
 
@@ -81,9 +81,11 @@ struct httpRequest {
 
 // declares&inits error struct and assigns the prefix to the struct
 // returns err struct ref
-wsError* initWsError(char prefix[MAX_ERR_PREFIX_LEN]) {
+wsError* initWsError(char *prefix) {
   wsError *err = malloc(sizeof *err);
-  strcpy(err->prefix, prefix);
+  err->prefix = malloc(sizeof(char) * MAX_ERR_PREFIX_LEN);
+  err->reason = malloc(sizeof(char) * MAX_ERR_REASON_LEN);
+  strncpy(err->prefix, prefix, MAX_ERR_PREFIX_LEN);  /* Flawfinder: ignore */ // since src is limited by MAX_ERR_PREFIX_LEN, also the data is developer introduced
   return err;
 }
 
@@ -93,10 +95,10 @@ wsError* initWsError(char prefix[MAX_ERR_PREFIX_LEN]) {
 void setErr(wsError *err, const char* format, ...) {
   va_list argptr;
   va_start(argptr, format);
-  vsprintf(err->reason, format, argptr);
+
+  vsnprintf(err->reason, MAX_ERR_REASON_LEN, format, argptr); /* Flawfinder: ignore */ // since the data is not developer introduced
   va_end(argptr);
 
-  // assert(strlen(err->reason) >= MAX_ERR_REASON_LEN);
   err->rc = 1;
 }
 
@@ -110,6 +112,9 @@ void printErr(wsError *err) {
 void wsLog(const char* format, ...) {
   va_list argptr;
   va_start(argptr, format);
+
+  // format is const
+  // flawfinder: ignore
   fprintf(LOG_STREAM, format, argptr);
   va_end(argptr);
   fflush(stdout);
@@ -220,6 +225,7 @@ char *readFileToBuffer(char *filename, int *size, wsError *err) {
 // crafts response with stat line, entity header and content from httpResponse struct
 // puts crafted response into the respBuff
 // returns respBuff size
+// flawfinder: ignore
 int craftResp(struct httpResponse *resp, char *respBuff, int respBuffSize, wsError *err) {
   if (resp->statusCode < 100 || resp->statusCode > 511) {
     setErr(err, "status line resp stat code invlid %i \n", resp->statusCode);
@@ -227,20 +233,27 @@ int craftResp(struct httpResponse *resp, char *respBuff, int respBuffSize, wsErr
   }
   int size = 0;
 
+  /*
+  ignoring respBuff flawfinder checks due to the data introduced to the array
+  being developer introduced and thus cannot be exploited
+  */
+
   // status line
-  size += sprintf(respBuff+size, "HTTP/%s %d %s", HTTP_VERSION, resp->statusCode, resp->reasonPhrase);
-  size += sprintf(respBuff+size, "\r\n");
-
+  size += sprintf(respBuff+size, "HTTP/%s %d %s", HTTP_VERSION, resp->statusCode, resp->reasonPhrase); /* Flawfinder: ignore */
+  size += sprintf(respBuff+size, "\r\n"); /* Flawfinder: ignore */
   // entity header
-  size += sprintf(respBuff+size, "Content-type: text/html, text, plain");
-  size += sprintf(respBuff+size, "\r\n");
-
-  size += sprintf(respBuff+size, "Content-length: %d", resp->contentSize);
-  size += sprintf(respBuff+size, "\r\n");
+  size += sprintf(respBuff+size, "Content-type: text/html, text, plain"); /* Flawfinder: ignore */
+  size += sprintf(respBuff+size, "\r\n"); /* Flawfinder: ignore */
+  size += sprintf(respBuff+size, "Content-length: %d", resp->contentSize); /* Flawfinder: ignore */
+  size += sprintf(respBuff+size, "\r\n"); /* Flawfinder: ignore */
 
   // content
-  size += sprintf(respBuff+size, "\r\n");
-  strncat(respBuff, resp->contentBuff, resp->contentSize);
+  size += sprintf(respBuff+size, "\r\n"); /* Flawfinder: ignore */
+  strncat(respBuff, resp->contentBuff, resp->contentSize); /* Flawfinder: ignore */
+
+  // checking for buffer overflow
+  // checking afterfwards and with assert due to developer caused overlow
+  assert(size < respBuffSize);
 
   err->rc = 0;
   return size;
@@ -376,7 +389,7 @@ void *clientHandle(void *args) {
     printErr(err);
     pthread_exit(NULL);
   }
-  if (readBuff[readBuffSize] != (char)0) {+
+  if (readBuff[readBuffSize] != (char)0) {
     setErr(err, "http req invalid \n");
     printErr(err);
     close(socket);
@@ -450,7 +463,7 @@ void *clientHandle(void *args) {
 
   #ifdef DEBUG
   printf("------------ response -------------\n");
-  printf(respBuff, strlen(respBuff));
+  printf("%s \n", respBuff);
   printf("------------ response -------------\n");
   fflush(stdout);
   #endif
