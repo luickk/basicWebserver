@@ -389,13 +389,8 @@ void *clientHandle(void *args) {
     printErr(err);
     pthread_exit(NULL);
   }
-  if (readBuff[readBuffSize] != (char)0) {
-    setErr(err, "http req invalid \n");
-    printErr(err);
-    close(socket);
-    freeClient(readBuff, respBuff, &httpReq, err);
-    pthread_exit(NULL);
-  }
+  // \0 terminating readBuffer
+  readBuff[readBuffSize] = (char)0;
 
   reqSize = parseHttpRequest(&httpReq, readBuff, readBuffSize, err);
   if (err->rc != 0){
