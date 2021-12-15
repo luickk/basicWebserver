@@ -34,6 +34,12 @@
 #define HTTP_REQ_LINE_LEN 3
 
 
+
+struct clientThreadState {
+  pthread_t *clientThread;
+  struct pthreadClientHandleArgs *args;
+};
+
 typedef struct {
   pthread_mutex_t mutexLock;
   unsigned short port;
@@ -42,9 +48,15 @@ typedef struct {
   int clientIdThreadCounter;
   int nRoutes;
 
-  pthread_t *clientThreads;
+  struct clientThreadState *clientThreads;
   struct httpRoute **routes;
 } webserver;
+
+struct pthreadClientHandleArgs {
+  webserver *wserver;
+  int socket;
+  int alive;
+};
 
 typedef struct {
   char *prefix;
@@ -52,16 +64,12 @@ typedef struct {
   int rc;
 } wsError;
 
-struct pthreadClientHandleArgs {
-  webserver *wserver;
-  int socket;
-};
-
 struct httpRoute {
   const char *path;
   const char *method;
   struct httpResponse *httpResp;
 };
+
 
 char httpMethods[][MAX_HTTP_METHOD_LEN] = { "GET", "POST" };
 
@@ -466,6 +474,10 @@ void *clientHandle(void *args) {
 
   wsLog("server-response sent \n");
 
+  pthread_mutex_lock(&argss->wserver->mutexLock);
+  argss->alive = 0;
+  pthread_mutex_unlock(&argss->wserver->mutexLock);
+
   freeClient(readBuff, respBuff, &httpReq, err);
   close(socket);
   pthread_exit(NULL);
@@ -474,7 +486,6 @@ void *clientHandle(void *args) {
 // waits for new incoming connections on port x and creates clientHandles threads accordingly
 void wsListen(webserver *wserver, wsError *err) {
   struct sockaddr_in tempClient;
-  struct pthreadClientHandleArgs *clientArgs = malloc(sizeof *clientArgs);
 
   if (pthread_mutex_init(&wserver->mutexLock, NULL) != 0) {
     setErr(err, "mutex init failed \n");
@@ -491,7 +502,6 @@ void wsListen(webserver *wserver, wsError *err) {
     newSocket = accept(wserver->wserverSocket, (struct sockaddr *) &tempClient, &addr_size);
     if (newSocket == -1) {
       setErr(err, "tcp accept error \n");
-      free(clientArgs);
       return;
     }
     wsLog("new client connected \n");
@@ -505,26 +515,38 @@ void wsListen(webserver *wserver, wsError *err) {
     }
     #endif
 
-    clientArgs->wserver = wserver;
-    clientArgs->socket = newSocket;
 
     if (wserver->clientIdThreadCounter == 0) {
-      wserver->clientThreads = malloc(sizeof *wserver->clientThreads);
+      wserver->clientThreads = malloc(sizeof(struct clientThreadState));
     } else {
-      wserver->clientThreads = realloc(wserver->clientThreads, sizeof(pthread_t)*(wserver->clientIdThreadCounter+1));
+      wserver->clientThreads = realloc(wserver->clientThreads, sizeof(struct clientThreadState)*(wserver->clientIdThreadCounter+1));
     }
-    if(pthread_create(&wserver->clientThreads[wserver->clientIdThreadCounter], NULL, clientHandle, (void*)clientArgs) != 0 ) {
+
+    // freed when thread is dead
+    struct pthreadClientHandleArgs *clientArgs = malloc(sizeof clientArgs);
+    clientArgs->wserver = wserver;
+    clientArgs->socket = newSocket;
+    clientArgs->alive = 1;
+    wserver->clientThreads[wserver->clientIdThreadCounter].args = clientArgs;
+    wserver->clientThreads[wserver->clientIdThreadCounter].clientThread = malloc(sizeof(pthread_t));
+
+    if(pthread_create(wserver->clientThreads[wserver->clientIdThreadCounter].clientThread, NULL, clientHandle, (void*)clientArgs) != 0 ) {
       setErr(err, "thread create error \n");
-      free(clientArgs);
       return;
     } else {
       wserver->clientIdThreadCounter++;
-      // if (wserver->clientIdThreadCounter >= 5) {
-      //   break;
-      // }
+      struct clientThreadState tempThreadState = {};
+      pthread_mutex_lock(&wserver->mutexLock);
+      for (int i = 0; i <= wserver->clientIdThreadCounter; i++) {
+        if (!wserver->clientThreads[wserver->clientIdThreadCounter].args->alive) {
+          tempThreadState = wserver->clientThreads[i];
+          wserver->clientThreads[i] = wserver->clientThreads[wserver->clientIdThreadCounter];
+          wserver->clientThreads[wserver->clientIdThreadCounter] = tempThreadState;
+        }
+      }
+      pthread_mutex_unlock(&wserver->mutexLock);
     }
   }
-  free(clientArgs);
   err->rc = 0;
 }
 
