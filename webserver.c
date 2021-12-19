@@ -33,23 +33,22 @@
 // parsing consts
 #define HTTP_REQ_LINE_LEN 3
 
-
-
 struct clientThreadState {
-  pthread_t *clientThread;
   struct pthreadClientHandleArgs *args;
+  pthread_t *clientThread;
 };
 
 typedef struct {
-  pthread_mutex_t mutexLock;
-  unsigned short port;
   struct sockaddr_in server;
+  struct clientThreadState *clientThreads;
+  struct httpRoute **routes;
+
   int wserverSocket;
   int clientIdThreadCounter;
   int nRoutes;
 
-  struct clientThreadState *clientThreads;
-  struct httpRoute **routes;
+  pthread_mutex_t mutexLock;
+  unsigned short port;
 } webserver;
 
 struct pthreadClientHandleArgs {
@@ -59,9 +58,9 @@ struct pthreadClientHandleArgs {
 };
 
 typedef struct {
+  int rc;
   char *prefix;
   char *reason;
-  int rc;
 } wsError;
 
 struct httpRoute {
@@ -75,16 +74,24 @@ char httpMethods[][MAX_HTTP_METHOD_LEN] = { "GET", "POST" };
 
 struct httpResponse {
   int statusCode;
-  char *reasonPhrase;
-  char *contentBuff;
   int isFile;
   int contentSize;
+  char *reasonPhrase;
+  char *contentBuff;
 };
 
 struct httpRequest {
-  char *reqMethod;
   float httpVersion;
+  char *reqMethod;
   char *requestUri;
+};
+
+struct freeClientThreadArgs {
+  struct httpRequest *httpReq;
+  struct pthreadClientHandleArgs *clientHandleArgs;
+  char *readBuff;
+  char *respBuff;
+  wsError *err;
 };
 
 // declares&inits error struct and assigns the prefix to the struct
@@ -358,43 +365,54 @@ void wsInit(webserver *wserver, int port, wsError *err) {
 }
 
 // frees all allocated memory from the clientHandle thread
-void freeClient(char *readBuff, char *respBuff, struct httpRequest *httpReq, wsError *err) {
-  free(readBuff);
-  free(respBuff);
-  free(httpReq->requestUri);
-  free(httpReq->reqMethod);
-  free(err);
+void freeClientThread(void *args) {
+  struct freeClientThreadArgs *argss = (struct freeClientThreadArgs*)args;
+  free(argss->readBuff);
+  free(argss->respBuff);
+  free(argss->httpReq->requestUri);
+  free(argss->httpReq->reqMethod);
+  free(argss->err);
+
+  pthread_mutex_lock(&argss->clientHandleArgs->wserver->mutexLock);
+  argss->clientHandleArgs->alive = 0;
+  pthread_mutex_unlock(&argss->clientHandleArgs->wserver->mutexLock);
 }
 
 // the clientHandle thread waits for incoming request and crafts the reply accordingly
 // quits thread after reply/ does not continue to reply to multiple requests on one connection. does not support persistent connections
 void *clientHandle(void *args) {
   struct pthreadClientHandleArgs *argss = (struct pthreadClientHandleArgs*)args;
-  pthread_mutex_lock(&argss->wserver->mutexLock);
   int socket = argss->socket;
-  pthread_mutex_unlock(&argss->wserver->mutexLock);
 
   wsError *err = initWsError("error(clientHandle)->");
 
   char *readBuff = malloc(sizeof(char)*WS_BUFF_SIZE);
   char *respBuff = malloc(sizeof(char)*WS_BUFF_SIZE);
-  struct httpRequest httpReq = {};
-  struct httpResponse resp = {};
+  struct httpRequest httpReq;
+  struct httpResponse resp;
+
   int respSize, reqSize, sentBuffSize;
   int routeFound = 0;
 
   wsLog("new client thread created \n");
 
   int readBuffSize = read(socket, readBuff, WS_BUFF_SIZE); /* Flawfinder: ignore */ // buffer-overlow check follows in sec-checks
+  struct freeClientThreadArgs freeArgs = {.httpReq = &httpReq, .clientHandleArgs = argss, .readBuff = readBuff, .respBuff = respBuff, .err = err};
+  pthread_cleanup_push(freeClientThread, &freeArgs);
+
   if (readBuffSize == -1) {
     setErr(err, "tcp read error \n");
     printErr(err);
+
+    close(socket);
     pthread_exit(NULL);
   }
   // sec checks
   if (readBuffSize >= WS_BUFF_SIZE) {
     setErr(err, "http req exceeds buffer size \n");
     printErr(err);
+
+    close(socket);
     pthread_exit(NULL);
   }
   // \0 terminating readBuffer
@@ -403,8 +421,8 @@ void *clientHandle(void *args) {
   reqSize = parseHttpRequest(&httpReq, readBuff, readBuffSize, err);
   if (err->rc != 0){
     printErr(err);
+
     close(socket);
-    freeClient(readBuff, respBuff, &httpReq, err);
     pthread_exit(NULL);
   }
 
@@ -423,7 +441,7 @@ void *clientHandle(void *args) {
       respSize = craftResp(argss->wserver->routes[i]->httpResp, respBuff, WS_BUFF_SIZE, err);
       if (err->rc != 0){
         printErr(err);
-        freeClient(readBuff, respBuff, &httpReq, err);
+
         close(socket);
         pthread_exit(NULL);
       }
@@ -431,7 +449,7 @@ void *clientHandle(void *args) {
       sentBuffSize = sendBuffer(socket, respBuff, strlen(respBuff), err); /* Flawfinder: ignore */ // \0 termination given by craftResp function
       if (err->rc != 0) {
         printErr(err);
-        freeClient(readBuff, respBuff, &httpReq, err);
+
         close(socket);
         pthread_exit(NULL);
       }
@@ -449,7 +467,7 @@ void *clientHandle(void *args) {
     respSize = craftResp(&resp, respBuff, WS_BUFF_SIZE, err);
     if (err->rc != 0){
       printErr(err);
-      freeClient(readBuff, respBuff, &httpReq, err);
+
       close(socket);
       pthread_exit(NULL);
     }
@@ -459,8 +477,6 @@ void *clientHandle(void *args) {
       printErr(err);
 
       close(socket);
-
-      freeClient(readBuff, respBuff, &httpReq, err);
       pthread_exit(NULL);
     }
   }
@@ -474,12 +490,8 @@ void *clientHandle(void *args) {
 
   wsLog("server-response sent \n");
 
-  pthread_mutex_lock(&argss->wserver->mutexLock);
-  argss->alive = 0;
-  pthread_mutex_unlock(&argss->wserver->mutexLock);
-
-  freeClient(readBuff, respBuff, &httpReq, err);
   close(socket);
+  pthread_cleanup_pop(1);
   pthread_exit(NULL);
 }
 
@@ -496,6 +508,7 @@ void wsListen(webserver *wserver, wsError *err) {
 
   int newSocket;
   socklen_t addr_size;
+  wserver->clientThreads = malloc(sizeof(struct clientThreadState));
   while(1)
   {
     addr_size = sizeof tempClient;
@@ -515,13 +528,12 @@ void wsListen(webserver *wserver, wsError *err) {
     }
     #endif
 
+    printf("clientIdThreadCounter: %d \n", wserver->clientIdThreadCounter);
 
-    if (wserver->clientIdThreadCounter == 0) {
-      wserver->clientThreads = malloc(sizeof(struct clientThreadState));
-    } else {
+    if (wserver->clientIdThreadCounter != 0) {
       wserver->clientThreads = realloc(wserver->clientThreads, sizeof(struct clientThreadState)*(wserver->clientIdThreadCounter+1));
+      printf("%p \n", wserver->clientThreads);
     }
-
     // freed when thread is dead
     struct pthreadClientHandleArgs *clientArgs = malloc(sizeof clientArgs);
     clientArgs->wserver = wserver;
@@ -530,22 +542,31 @@ void wsListen(webserver *wserver, wsError *err) {
     wserver->clientThreads[wserver->clientIdThreadCounter].args = clientArgs;
     wserver->clientThreads[wserver->clientIdThreadCounter].clientThread = malloc(sizeof(pthread_t));
 
-    if(pthread_create(wserver->clientThreads[wserver->clientIdThreadCounter].clientThread, NULL, clientHandle, (void*)clientArgs) != 0 ) {
+    if(pthread_create(wserver->clientThreads[wserver->clientIdThreadCounter].clientThread, NULL, clientHandle, (void*)wserver->clientThreads[wserver->clientIdThreadCounter].args) != 0 ) {
       setErr(err, "thread create error \n");
       return;
     } else {
-      wserver->clientIdThreadCounter++;
-      struct clientThreadState tempThreadState = {};
-      pthread_mutex_lock(&wserver->mutexLock);
+      struct clientThreadState tempThreadState;
       for (int i = 0; i <= wserver->clientIdThreadCounter; i++) {
-        if (!wserver->clientThreads[wserver->clientIdThreadCounter].args->alive) {
+        pthread_mutex_lock(&wserver->mutexLock);
+        if (!wserver->clientThreads[i].args->alive && i != 0) {
+          // moving threadState ref to the end of the array in order to be able to free the mem
           tempThreadState = wserver->clientThreads[i];
           wserver->clientThreads[i] = wserver->clientThreads[wserver->clientIdThreadCounter];
           wserver->clientThreads[wserver->clientIdThreadCounter] = tempThreadState;
+
+          // freeing threadState references
+          // printf("ss \n");
+          // free(wserver->clientThreads[wserver->clientIdThreadCounter].clientThread);
+          // printf("cc \n");
+          free(wserver->clientThreads[wserver->clientIdThreadCounter].args);
+          wserver->clientIdThreadCounter--;
         }
+        pthread_mutex_unlock(&wserver->mutexLock);
       }
-      pthread_mutex_unlock(&wserver->mutexLock);
+      wserver->clientThreads = realloc(wserver->clientThreads, sizeof(struct clientThreadState)*(wserver->clientIdThreadCounter+1));
     }
+  wserver->clientIdThreadCounter++;
   }
   err->rc = 0;
 }
@@ -553,7 +574,6 @@ void wsListen(webserver *wserver, wsError *err) {
 // frees the webserver struct and all allocated attributes
 void freeWs(webserver *wserver) {
   freeRoutes(wserver);
-  free(wserver->clientThreads);
   free(wserver);
 }
 
@@ -564,7 +584,7 @@ int main() {
   wsError *err = initWsError("error(server)->");
   webserver *wserver = malloc(sizeof *wserver);
 
-  wsInit(wserver, 80, err);
+  wsInit(wserver, 8080, err);
   if (err->rc != 0) {
     printErr(err);
     return 1;
@@ -585,14 +605,14 @@ int main() {
   routeResponse->reasonPhrase = "succ";
   // by marking it as file, the dynamically allocated memory from the file buffer gets freed
   routeResponse->isFile = 1;
-  routeResponse->contentBuff = readFileToBuffer("../lol.html", &routeResponse->contentSize, err);
+  routeResponse->contentBuff = readFileToBuffer("../testPage.html", &routeResponse->contentSize, err);
   if (err->rc != 0) {
     printErr(err);
     freeWs(wserver);
     free(err);
     return 1;
   }
-  struct httpRoute *route = createRoute("/lol", "GET", routeResponse);
+  struct httpRoute *route = createRoute("/testPage", "GET", routeResponse);
   addRouteToWs(wserver, route);
 
   wsListen(wserver, err);
