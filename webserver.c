@@ -9,6 +9,8 @@
 #include <assert.h>
 #include <signal.h>
 
+#include <unistd.h>
+
 // #define DEBUG 1
 
 // defines version contained within the client reply
@@ -64,8 +66,8 @@ typedef struct {
 } wsError;
 
 struct httpRoute {
-  const char *path;
-  const char *method;
+  char *path;
+  char *method;
   struct httpResponse *httpResp;
 };
 
@@ -134,10 +136,14 @@ void wsLog(const char* format, ...) {
 // declares&inits route struct
 // defines route struct attr
 // returns reference to route struct
-struct httpRoute *createRoute(const char *path, const char *method, struct httpResponse *resp) {
+struct httpRoute *createRoute(char *path, char *method, struct httpResponse *resp) {
   struct httpRoute *route = malloc(sizeof *route);
-  route->path = path;
-  route->method = method;
+  route->path = malloc(sizeof(char) * strlen(path));
+  strcpy(route->path, path);
+
+  route->method = malloc(sizeof(char) * MAX_HTTP_METHOD_LEN);
+  strcpy(route->method, path);
+
   route->httpResp = resp;
 
   return route;
@@ -150,6 +156,8 @@ void freeRoutes(webserver *ws) {
       free(ws->routes[i]->httpResp->contentBuff);
     }
     free(ws->routes[i]->httpResp);
+    free(ws->routes[i]->method);
+    free(ws->routes[i]->path);
     free(ws->routes[i]);
   }
   free(ws->routes);
@@ -436,6 +444,12 @@ void *clientHandle(void *args) {
 
   pthread_mutex_lock(&argss->wserver->mutexLock);
   for (int i = 0; i < argss->wserver->nRoutes; i++) {
+    if (!httpReq.requestUri) {
+      wsLog("invalid request \n");
+      close(socket);
+      pthread_mutex_unlock(&argss->wserver->mutexLock);
+      pthread_exit(NULL);
+    }
     if (strcmp(argss->wserver->routes[i]->path, httpReq.requestUri) == 0) {
       routeFound = 1;
       respSize = craftResp(argss->wserver->routes[i]->httpResp, respBuff, WS_BUFF_SIZE, err);
@@ -443,6 +457,7 @@ void *clientHandle(void *args) {
         printErr(err);
 
         close(socket);
+        pthread_mutex_unlock(&argss->wserver->mutexLock);
         pthread_exit(NULL);
       }
 
@@ -451,6 +466,7 @@ void *clientHandle(void *args) {
         printErr(err);
 
         close(socket);
+        pthread_mutex_unlock(&argss->wserver->mutexLock);
         pthread_exit(NULL);
       }
     }
@@ -528,17 +544,15 @@ void wsListen(webserver *wserver, wsError *err) {
     }
     #endif
 
-    printf("clientIdThreadCounter: %d \n", wserver->clientIdThreadCounter);
-
     if (wserver->clientIdThreadCounter != 0) {
       wserver->clientThreads = realloc(wserver->clientThreads, sizeof(struct clientThreadState)*(wserver->clientIdThreadCounter+1));
-      printf("%p \n", wserver->clientThreads);
     }
     // freed when thread is dead
     struct pthreadClientHandleArgs *clientArgs = malloc(sizeof clientArgs);
     clientArgs->wserver = wserver;
     clientArgs->socket = newSocket;
     clientArgs->alive = 1;
+
     wserver->clientThreads[wserver->clientIdThreadCounter].args = clientArgs;
     wserver->clientThreads[wserver->clientIdThreadCounter].clientThread = malloc(sizeof(pthread_t));
 
@@ -556,9 +570,7 @@ void wsListen(webserver *wserver, wsError *err) {
           wserver->clientThreads[wserver->clientIdThreadCounter] = tempThreadState;
 
           // freeing threadState references
-          // printf("ss \n");
-          // free(wserver->clientThreads[wserver->clientIdThreadCounter].clientThread);
-          // printf("cc \n");
+          free(wserver->clientThreads[wserver->clientIdThreadCounter].clientThread);
           free(wserver->clientThreads[wserver->clientIdThreadCounter].args);
           wserver->clientIdThreadCounter--;
         }
