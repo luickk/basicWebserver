@@ -24,8 +24,6 @@
 
 // logging and static len vars
 #define MAX_HTTP_METHOD_LEN 10
-#define MAX_ERR_REASON_LEN 100
-#define MAX_ERR_PREFIX_LEN 40
 
 // important string parsing literals
 #define CR 0x0D
@@ -59,11 +57,14 @@ struct pthreadClientHandleArgs {
   int alive;
 };
 
-typedef struct {
-  int rc;
-  char *prefix;
-  char *reason;
-} wsError;
+
+enum errReturnCode {
+  errOk,
+  errFailed,
+  errParse,
+  errNet,
+  errIO
+};
 
 struct httpRoute {
   char *path;
@@ -93,34 +94,20 @@ struct freeClientThreadArgs {
   struct pthreadClientHandleArgs *clientHandleArgs;
   char *readBuff;
   char *respBuff;
-  wsError *err;
 };
 
-// declares&inits error struct and assigns the prefix to the struct
-// returns err struct ref
-wsError* initWsError(char *prefix) {
-  wsError *err = malloc(sizeof *err);
-  err->prefix = malloc(sizeof(char) * MAX_ERR_PREFIX_LEN);
-  err->reason = malloc(sizeof(char) * MAX_ERR_REASON_LEN);
-  strncpy(err->prefix, prefix, MAX_ERR_PREFIX_LEN);  /* Flawfinder: ignore */ // ignored since src is limited by MAX_ERR_PREFIX_LEN, also the data is developer introduced
-  return err;
-}
-
-// sets passed error struct reason attr to char arr
-// supports format
-// returns modified err struct reference
-void setErr(wsError *err, const char* format, ...) {
-  va_list argptr;
-  va_start(argptr, format);
-  vsnprintf(err->reason, MAX_ERR_REASON_LEN, format, argptr); /* Flawfinder: ignore */ // ignored since the data is developer introduced and len limited by vsnprintf
-  va_end(argptr);
-
-  err->rc = 1;
-}
-
 // prints referenced error struct prefix+reason
-void printErr(wsError *err) {
-  fprintf(stderr, "%s %s", err->prefix, err->reason);
+void printErr(int err) {
+  if (err == errOk) {
+  } else if (err == errFailed) {
+    fprintf(stderr, "simpleWebserver undefined error \n");
+  } else if (err == errParse) {
+    fprintf(stderr, "simpleWebserver parsing error \n");
+  } else if (err == errNet) {
+    fprintf(stderr, "simpleWebserver network error \n");
+  } else if (err == errIO) {
+    fprintf(stderr, "simpleWebserver io error \n");
+  }
 }
 
 // printf's log char arr to given stream
@@ -186,7 +173,7 @@ void removeSpaces(char* str, int strle) {
 
 // sends buffer on given socket
 // returns sent data size
-int sendBuffer(int sock, char *buff, int buffSize, wsError *err) {
+int sendBuffer(int sock, char *buff, int buffSize, int *err) {
   int sendLeft = buffSize;
   int dataSent = 0;
   int rc;
@@ -194,13 +181,14 @@ int sendBuffer(int sock, char *buff, int buffSize, wsError *err) {
   {
     rc = send(sock, buff+(buffSize-sendLeft), sendLeft, 0);
     if (rc == -1) {
-      setErr(err, "send failed \n");
+      wsLog("send failed \n");
+      *err = errNet;
       return 0;
     }
     sendLeft -= rc;
     dataSent += rc;
   }
-  err->rc = 0;
+  *err = errOk;
   return dataSent;
 }
 
@@ -211,7 +199,7 @@ void printfBuffer(char *buff, int buffSize) {
 }
 
 // by https://stackoverflow.com/a/3464656, modified
-char *readFileToBuffer(char *filename, int *size, wsError *err) {
+char *readFileToBuffer(char *filename, int *size, int *err) {
   int stringSize, readSize;
   FILE *handler = fopen(filename, "r"); /* Flawfinder: ignore */ // check for \0 terminateion and bufferoverflow checks are implemented below,
   // since the system & files are developer handled and not meant to be modified during execution, race conditions are not considered
@@ -227,27 +215,29 @@ char *readFileToBuffer(char *filename, int *size, wsError *err) {
     buffer[readSize] = 0;
 
     if (stringSize != readSize) {
-      setErr(err, "file read sizes conflict \n");
+      wsLog("file read sizes conflict \n");
+      *err = errParse;
       return NULL;
     }
 
     // always remember to close the file
     fclose(handler);
   } else {
-    setErr(err, "file open error (file not found?) \n");
+    wsLog("file open error (file not found?) \n");
+    *err = errIO;
     return NULL;
   }
-  err->rc = 0;
   *size = readSize;
+  *err = errOk;
   return buffer;
 }
 
 // crafts response with stat line, entity header and content from httpResponse struct
 // puts crafted response into the respBuff
 // returns respBuff size
-int craftResp(struct httpResponse *resp, char *respBuff, int respBuffSize, wsError *err) {
+int craftResp(struct httpResponse *resp, char *respBuff, int respBuffSize, int *err) {
   if (resp->statusCode < 100 || resp->statusCode > 511) {
-    setErr(err, "status line resp stat code invlid %i \n", resp->statusCode);
+    wsLog("status line resp stat code invlid %i \n", resp->statusCode);
     return 0;
   }
   int size = 0;
@@ -274,13 +264,13 @@ int craftResp(struct httpResponse *resp, char *respBuff, int respBuffSize, wsErr
   // checking beforehand would require extra memory and code which is spared
   assert(size < respBuffSize);
 
-  err->rc = 0;
+  *err = errOk;
   return size;
 }
 
 // parses incoming httpRequest from reqBuff to the httpRequest struct
 // returns reqBuffSize size
-int parseHttpRequest(struct httpRequest *req, char *reqBuff, int reqBuffSize, wsError *err) {
+int parseHttpRequest(struct httpRequest *req, char *reqBuff, int reqBuffSize, int *err) {
   #ifdef DEBUG
   printf("------------ request -------------\n");
   printf("%s \n", reqBuff);
@@ -306,13 +296,6 @@ int parseHttpRequest(struct httpRequest *req, char *reqBuff, int reqBuffSize, ws
         case 0:
           req->reqMethod = malloc(sizeof(char)*iElementSize);
           memcpy(req->reqMethod, reqBuff+iElementUsedMem, iElementSize);  /* Flawfinder: ignore */ // in the line above memory is adequately allocated
-          for (int i = 0; i<(sizeof(httpMethods)/MAX_HTTP_METHOD_LEN); i++) {
-            if (strcmp(req->reqMethod, httpMethods[i]) == 0)
-              break;
-            if (i == (sizeof(httpMethods)/MAX_HTTP_METHOD_LEN))
-              setErr(err, "http method not supported \n");
-              return 0;
-          }
           break;
         case 1:
           req->requestUri = malloc(sizeof(char)*iElementSize);
@@ -335,18 +318,19 @@ int parseHttpRequest(struct httpRequest *req, char *reqBuff, int reqBuffSize, ws
     }
   }
 
-  err->rc = 0;
+  *err = errOk;
   return iElementUsedMem;
 }
 
 // inits the webserver struct on given port
 // binds & starts listening on webserver Socket
-void wsInit(webserver *wserver, int port, wsError *err) {
+void wsInit(webserver *wserver, int port, int *err) {
   wserver->port = port;
 
   if ((wserver->wserverSocket = socket(AF_INET, SOCK_STREAM, 0)) < 0)
   {
-    setErr(err, "socket err \n");
+    wsLog("socket err \n");
+    *err = errNet;
     return;
   }
 
@@ -359,17 +343,19 @@ void wsInit(webserver *wserver, int port, wsError *err) {
 
   if (bind(wserver->wserverSocket, (struct sockaddr *)&wserver->server, sizeof(wserver->server)) < 0)
   {
-    setErr(err, "http server socket binding err \n");
+    wsLog("http server socket binding err \n");
+    *err = errNet;
     return;
   }
 
   if (listen(wserver->wserverSocket, 1) != 0)
   {
-    setErr(err, "http server init listen err \n");
+    wsLog("http server init listen err \n");
+    *err = errNet;
     return;
   }
 
-  err->rc = 0;
+  *err = errOk;
 }
 
 // frees all allocated memory from the clientHandle thread
@@ -379,7 +365,6 @@ void freeClientThread(void *args) {
   free(argss->respBuff);
   free(argss->httpReq->requestUri);
   free(argss->httpReq->reqMethod);
-  free(argss->err);
 
   pthread_mutex_lock(&argss->clientHandleArgs->wserver->mutexLock);
   argss->clientHandleArgs->alive = 0;
@@ -392,7 +377,7 @@ void *clientHandle(void *args) {
   struct pthreadClientHandleArgs *argss = (struct pthreadClientHandleArgs*)args;
   int socket = argss->socket;
 
-  wsError *err = initWsError("error(clientHandle)->");
+  int err = errOk;
 
   char *readBuff = malloc(sizeof(char)*WS_BUFF_SIZE);
   char *respBuff = malloc(sizeof(char)*WS_BUFF_SIZE);
@@ -405,20 +390,18 @@ void *clientHandle(void *args) {
   wsLog("new client thread created \n");
 
   int readBuffSize = read(socket, readBuff, WS_BUFF_SIZE); /* Flawfinder: ignore */ // buffer-overlow check follows in sec-checks
-  struct freeClientThreadArgs freeArgs = {.httpReq = &httpReq, .clientHandleArgs = argss, .readBuff = readBuff, .respBuff = respBuff, .err = err};
+  struct freeClientThreadArgs freeArgs = {.httpReq = &httpReq, .clientHandleArgs = argss, .readBuff = readBuff, .respBuff = respBuff};
   pthread_cleanup_push(freeClientThread, &freeArgs);
 
   if (readBuffSize == -1) {
-    setErr(err, "tcp read error \n");
-    printErr(err);
+    wsLog("tcp read error \n");
 
     close(socket);
     pthread_exit(NULL);
   }
   // sec checks
   if (readBuffSize >= WS_BUFF_SIZE) {
-    setErr(err, "http req exceeds buffer size \n");
-    printErr(err);
+    wsLog("http req exceeds buffer size \n");
 
     close(socket);
     pthread_exit(NULL);
@@ -426,8 +409,8 @@ void *clientHandle(void *args) {
   // \0 terminating readBuffer
   readBuff[readBuffSize] = (char)0;
 
-  reqSize = parseHttpRequest(&httpReq, readBuff, readBuffSize, err);
-  if (err->rc != 0){
+  reqSize = parseHttpRequest(&httpReq, readBuff, readBuffSize, &err);
+  if (err != errOk){
     printErr(err);
 
     close(socket);
@@ -452,8 +435,8 @@ void *clientHandle(void *args) {
     }
     if (strcmp(argss->wserver->routes[i]->path, httpReq.requestUri) == 0) {
       routeFound = 1;
-      respSize = craftResp(argss->wserver->routes[i]->httpResp, respBuff, WS_BUFF_SIZE, err);
-      if (err->rc != 0){
+      respSize = craftResp(argss->wserver->routes[i]->httpResp, respBuff, WS_BUFF_SIZE, &err);
+      if (err != errOk) {
         printErr(err);
 
         close(socket);
@@ -461,8 +444,8 @@ void *clientHandle(void *args) {
         pthread_exit(NULL);
       }
 
-      sentBuffSize = sendBuffer(socket, respBuff, strlen(respBuff), err); /* Flawfinder: ignore */ // \0 termination given by craftResp function
-      if (err->rc != 0) {
+      sentBuffSize = sendBuffer(socket, respBuff, strlen(respBuff), &err); /* Flawfinder: ignore */ // \0 termination given by craftResp function
+      if (err != errOk) {
         printErr(err);
 
         close(socket);
@@ -474,22 +457,21 @@ void *clientHandle(void *args) {
   pthread_mutex_unlock(&argss->wserver->mutexLock);
 
   if (!routeFound) {
-    setErr(err, "page not found");
+    wsLog("page not found");
     resp.statusCode = 404;
     resp.reasonPhrase = "err";
-    err->reason[MAX_ERR_REASON_LEN] = 0;
-    resp.contentBuff = err->reason;
+    resp.contentBuff = "404 page not found";
     resp.contentSize = strlen(resp.contentBuff); /* Flawfinder: ignore */ // \0 termination set in the line above
-    respSize = craftResp(&resp, respBuff, WS_BUFF_SIZE, err);
-    if (err->rc != 0){
+    respSize = craftResp(&resp, respBuff, WS_BUFF_SIZE, &err);
+    if (err != errOk){
       printErr(err);
 
       close(socket);
       pthread_exit(NULL);
     }
 
-    sentBuffSize = sendBuffer(socket, respBuff, strlen(respBuff), err); /* Flawfinder: ignore */ // \0 termination given by craftResp function
-    if (err->rc != 0) {
+    sentBuffSize = sendBuffer(socket, respBuff, strlen(respBuff), &err); /* Flawfinder: ignore */ // \0 termination given by craftResp function
+    if (err != errOk) {
       printErr(err);
 
       close(socket);
@@ -512,11 +494,12 @@ void *clientHandle(void *args) {
 }
 
 // waits for new incoming connections on port x and creates clientHandles threads accordingly
-void wsListen(webserver *wserver, wsError *err) {
+void wsListen(webserver *wserver, int *err) {
   struct sockaddr_in tempClient;
 
   if (pthread_mutex_init(&wserver->mutexLock, NULL) != 0) {
-    setErr(err, "mutex init failed \n");
+    wsLog("mutex init failed \n");
+    *err = errFailed;
     return;
   }
 
@@ -530,7 +513,8 @@ void wsListen(webserver *wserver, wsError *err) {
     addr_size = sizeof tempClient;
     newSocket = accept(wserver->wserverSocket, (struct sockaddr *) &tempClient, &addr_size);
     if (newSocket == -1) {
-      setErr(err, "tcp accept error \n");
+      wsLog("tcp accept error \n");
+      *err = errNet;
       return;
     }
     wsLog("new client connected \n");
@@ -539,7 +523,8 @@ void wsListen(webserver *wserver, wsError *err) {
     // telling the kernel that the socket is reused - only for debugging purposes
     int yes=1;
     if (setsockopt(newSocket, SOL_SOCKET, SO_REUSEADDR, &yes, sizeof(yes)) == -1) {
-        setErr(err, "(debug flag set) socket reuse set failed \n");
+        wsLog("(debug flag set) socket reuse set failed \n");
+        *err = errNet;
         return;
     }
     #endif
@@ -557,7 +542,8 @@ void wsListen(webserver *wserver, wsError *err) {
     wserver->clientThreads[wserver->clientIdThreadCounter].clientThread = malloc(sizeof(pthread_t));
 
     if(pthread_create(wserver->clientThreads[wserver->clientIdThreadCounter].clientThread, NULL, clientHandle, (void*)wserver->clientThreads[wserver->clientIdThreadCounter].args) != 0 ) {
-      setErr(err, "thread create error \n");
+      wsLog("thread create error \n");
+      *err = errIO;
       return;
     } else {
       struct clientThreadState tempThreadState;
@@ -580,7 +566,7 @@ void wsListen(webserver *wserver, wsError *err) {
     }
   wserver->clientIdThreadCounter++;
   }
-  err->rc = 0;
+  *err = errOk;
 }
 
 // frees the webserver struct and all allocated attributes
@@ -593,11 +579,11 @@ void freeWs(webserver *wserver) {
  * Server Main.
  */
 int main() {
-  wsError *err = initWsError("error(server)->");
+  int err = errOk;
   webserver *wserver = malloc(sizeof *wserver);
 
-  wsInit(wserver, 8080, err);
-  if (err->rc != 0) {
+  wsInit(wserver, 8080, &err);
+  if (err != errOk) {
     printErr(err);
     return 1;
   }
@@ -617,26 +603,23 @@ int main() {
   routeResponse->reasonPhrase = "succ";
   // by marking it as file, the dynamically allocated memory from the file buffer gets freed
   routeResponse->isFile = 1;
-  routeResponse->contentBuff = readFileToBuffer("../testPage.html", &routeResponse->contentSize, err);
-  if (err->rc != 0) {
+  routeResponse->contentBuff = readFileToBuffer("../testPage.html", &routeResponse->contentSize, &err);
+  if (err != errOk) {
     printErr(err);
     freeWs(wserver);
-    free(err);
     return 1;
   }
   struct httpRoute *route = createRoute("/testPage", "GET", routeResponse);
   addRouteToWs(wserver, route);
 
-  wsListen(wserver, err);
-  if (err->rc != 0) {
+  wsListen(wserver, &err);
+  if (err != errOk) {
     printErr(err);
 
     freeWs(wserver);
-    free(err);
     return 1;
   }
 
   freeWs(wserver);
-  free(err);
   return 0;
 }
