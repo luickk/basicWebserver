@@ -603,7 +603,7 @@ int main() {
   routeResponse->reasonPhrase = "succ";
   // by marking it as file, the dynamically allocated memory from the file buffer gets freed
   routeResponse->isFile = 1;
-  routeResponse->contentBuff = readFileToBuffer("../testPage.html", &routeResponse->contentSize, &err);
+  routeResponse->contentBuff = readFileToBuffer("testPage.html", &routeResponse->contentSize, &err);
   if (err != errOk) {
     printErr(err);
     freeWs(wserver);

@@ -3,4 +3,5 @@ mkdir build
 cd build
 cmake ..
 make
-./basicWebserver
+cd ..
+exec build/basicWebserver
