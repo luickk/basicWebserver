@@ -91,6 +91,7 @@ struct httpRequest {
 
 struct freeClientThreadArgs {
   struct httpRequest *httpReq;
+  struct httpResponse *httpResp;
   struct pthreadClientHandleArgs *clientHandleArgs;
   char *readBuff;
   char *respBuff;
@@ -257,7 +258,7 @@ int craftResp(struct httpResponse *resp, char *respBuff, int respBuffSize, int *
 
   // content
   size += sprintf(respBuff+size, "\r\n"); /* Flawfinder: ignore */
-  strncat(respBuff, resp->contentBuff, resp->contentSize); /* Flawfinder: ignore */
+  respBuff = strncat(respBuff, resp->contentBuff, resp->contentSize); /* Flawfinder: ignore */
 
   // checking for buffer overflow
   // checking afterfwards and with assert due to developer caused overlow
@@ -363,8 +364,13 @@ void freeClientThread(void *args) {
   struct freeClientThreadArgs *argss = (struct freeClientThreadArgs*)args;
   free(argss->readBuff);
   free(argss->respBuff);
+
   free(argss->httpReq->requestUri);
   free(argss->httpReq->reqMethod);
+  free(argss->httpReq);
+
+  // other members are already free in response craft
+  free(argss->httpResp);
 
   pthread_mutex_lock(&argss->clientHandleArgs->wserver->mutexLock);
   argss->clientHandleArgs->alive = 0;
@@ -381,8 +387,8 @@ void *clientHandle(void *args) {
 
   char *readBuff = malloc(sizeof(char)*WS_BUFF_SIZE);
   char *respBuff = malloc(sizeof(char)*WS_BUFF_SIZE);
-  struct httpRequest httpReq;
-  struct httpResponse resp;
+  struct httpRequest *httpReq = malloc(sizeof (struct httpRequest));
+  struct httpResponse *httpResp = malloc(sizeof (struct httpResponse));
 
   int respSize, reqSize, sentBuffSize;
   int routeFound = 0;
@@ -390,7 +396,7 @@ void *clientHandle(void *args) {
   wsLog("new client thread created \n");
 
   int readBuffSize = read(socket, readBuff, WS_BUFF_SIZE); /* Flawfinder: ignore */ // buffer-overlow check follows in sec-checks
-  struct freeClientThreadArgs freeArgs = {.httpReq = &httpReq, .clientHandleArgs = argss, .readBuff = readBuff, .respBuff = respBuff};
+  struct freeClientThreadArgs freeArgs = {.httpReq = httpReq, .httpResp = httpResp, .clientHandleArgs = argss, .readBuff = readBuff, .respBuff = respBuff};
   pthread_cleanup_push(freeClientThread, &freeArgs);
 
   if (readBuffSize == -1) {
@@ -409,7 +415,7 @@ void *clientHandle(void *args) {
   // \0 terminating readBuffer
   readBuff[readBuffSize] = (char)0;
 
-  reqSize = parseHttpRequest(&httpReq, readBuff, readBuffSize, &err);
+  reqSize = parseHttpRequest(httpReq, readBuff, readBuffSize, &err);
   if (err != errOk){
     printErr(err);
 
@@ -419,21 +425,21 @@ void *clientHandle(void *args) {
 
   #ifdef DEBUG
   printf("------------ parsed request -------------\n");
-  printf("http version: %f \n", httpReq.httpVersion);
-  printf("req method: %s \n", httpReq.reqMethod);
-  printf("req uri: %s \n", httpReq.requestUri);
+  printf("http version: %f \n", httpReq->httpVersion);
+  printf("req method: %s \n", httpReq->reqMethod);
+  printf("req uri: %s \n", httpReq->requestUri);
   printf("------------ parsed request -------------\n");
   #endif
 
   pthread_mutex_lock(&argss->wserver->mutexLock);
   for (int i = 0; i < argss->wserver->nRoutes; i++) {
-    if (!httpReq.requestUri) {
+    if (!httpReq->requestUri) {
       wsLog("invalid request \n");
       close(socket);
       pthread_mutex_unlock(&argss->wserver->mutexLock);
       pthread_exit(NULL);
     }
-    if (strcmp(argss->wserver->routes[i]->path, httpReq.requestUri) == 0) {
+    if (strcmp(argss->wserver->routes[i]->path, httpReq->requestUri) == 0) {
       routeFound = 1;
       respSize = craftResp(argss->wserver->routes[i]->httpResp, respBuff, WS_BUFF_SIZE, &err);
       if (err != errOk) {
@@ -458,11 +464,13 @@ void *clientHandle(void *args) {
 
   if (!routeFound) {
     wsLog("page not found");
-    resp.statusCode = 404;
-    resp.reasonPhrase = "err";
-    resp.contentBuff = "404 page not found";
-    resp.contentSize = strlen(resp.contentBuff); /* Flawfinder: ignore */ // \0 termination set in the line above
-    respSize = craftResp(&resp, respBuff, WS_BUFF_SIZE, &err);
+    httpResp->statusCode = 404;
+
+    httpResp->reasonPhrase = "err";
+    httpResp->contentBuff = "404 page not found";
+
+    httpResp->contentSize = strlen(httpResp->contentBuff); /* Flawfinder: ignore */ // \0 termination set in the line above
+    respSize = craftResp(httpResp, respBuff, WS_BUFF_SIZE, &err);
     if (err != errOk){
       printErr(err);
 
@@ -508,8 +516,8 @@ void wsListen(webserver *wserver, int *err) {
   int newSocket;
   socklen_t addr_size;
   wserver->clientThreads = malloc(sizeof(struct clientThreadState));
-  while(1)
-  {
+  for (int v = 0; v <= 50; v++) {
+  // while (1) {
     addr_size = sizeof tempClient;
     newSocket = accept(wserver->wserverSocket, (struct sockaddr *) &tempClient, &addr_size);
     if (newSocket == -1) {
