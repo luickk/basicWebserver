@@ -61,6 +61,9 @@ struct pthreadClientHandleArgs {
 enum errReturnCode {
   errOk,
   errFailed,
+  errMemAlloc,
+  errSecCheck,
+  errInit,
   errParse,
   errNet,
   errIO
@@ -100,8 +103,16 @@ struct freeClientThreadArgs {
 // prints referenced error struct prefix+reason
 void printErr(int err) {
   if (err == errOk) {
+  } else if (err == errInit) {
+    fprintf(stderr, "simpleWebserver init error \n");
+  } else if (err == errSecCheck) {
+    fprintf(stderr, "simpleWebserver sec check error (e.g. bounds check) \n");
+  } else if (err == errFailed) {
+    fprintf(stderr, "simpleWebserver init error \n");
   } else if (err == errFailed) {
     fprintf(stderr, "simpleWebserver undefined error \n");
+  } else if (err == errMemAlloc) {
+    fprintf(stderr, "simpleWebserver error allocating memory \n");
   } else if (err == errParse) {
     fprintf(stderr, "simpleWebserver parsing error \n");
   } else if (err == errNet) {
@@ -124,12 +135,24 @@ void wsLog(const char* format, ...) {
 // declares&inits route struct
 // defines route struct attr
 // returns reference to route struct
-struct httpRoute *createRoute(char *path, char *method, struct httpResponse *resp) {
+struct httpRoute *createRoute(char *path, char *method, struct httpResponse *resp, int *err) {
   struct httpRoute *route = malloc(sizeof *route);
+  if (route == NULL) {
+    *err = errMemAlloc;
+    return NULL;
+  }
   route->path = malloc(sizeof(char) * strlen(path));
+  if (route->path == NULL) {
+    *err = errMemAlloc;
+    return NULL;
+  }
   strcpy(route->path, path);
 
   route->method = malloc(sizeof(char) * MAX_HTTP_METHOD_LEN);
+  if (route->method == NULL) {
+    *err = errMemAlloc;
+    return NULL;
+  }
   strcpy(route->method, path);
 
   route->httpResp = resp;
@@ -153,15 +176,19 @@ void freeRoutes(webserver *ws) {
 
 // adds route struct reference to webserver routes pointer arr
 // dynamically re/allocates memory
-void addRouteToWs(webserver *ws, struct httpRoute *route) {
+void addRouteToWs(webserver *ws, struct httpRoute *route, int *err) {
   if (ws->nRoutes == 0) {
     ws->routes = malloc(sizeof *ws->routes);
+    if (ws->routes == NULL) {
+      *err = errMemAlloc;
+    }
     ws->routes[ws->nRoutes] = route;
   } else {
     ws->routes = (struct httpRoute**)realloc(ws->routes, (ws->nRoutes+1)*sizeof(struct httpRoute**));
     ws->routes[ws->nRoutes] = route;
   }
   ws->nRoutes++;
+  *err = errOk;
 }
 
 // removes space characters from given string ref
@@ -182,7 +209,6 @@ int sendBuffer(int sock, char *buff, int buffSize, int *err) {
   {
     rc = send(sock, buff+(buffSize-sendLeft), sendLeft, 0);
     if (rc == -1) {
-      wsLog("send failed \n");
       *err = errNet;
       return 0;
     }
@@ -212,11 +238,14 @@ char *readFileToBuffer(char *filename, int *size, int *err) {
     rewind(handler);
 
     buffer = malloc(sizeof(char) *stringSize+1);
+    if (buffer == NULL) {
+      *err = errMemAlloc;
+      return NULL;
+    }
     readSize = fread(buffer, sizeof(char), stringSize, handler);
     buffer[readSize] = 0;
 
     if (stringSize != readSize) {
-      wsLog("file read sizes conflict \n");
       *err = errParse;
       return NULL;
     }
@@ -224,7 +253,6 @@ char *readFileToBuffer(char *filename, int *size, int *err) {
     // always remember to close the file
     fclose(handler);
   } else {
-    wsLog("file open error (file not found?) \n");
     *err = errIO;
     return NULL;
   }
@@ -235,11 +263,10 @@ char *readFileToBuffer(char *filename, int *size, int *err) {
 
 // crafts response with stat line, entity header and content from httpResponse struct
 // puts crafted response into the respBuff
-// returns respBuff size
-int craftResp(struct httpResponse *resp, char *respBuff, int respBuffSize, int *err) {
+void craftResp(struct httpResponse *resp, char *respBuff, int respBuffSize, int *err) {
   if (resp->statusCode < 100 || resp->statusCode > 511) {
-    wsLog("status line resp stat code invlid %i \n", resp->statusCode);
-    return 0;
+    *err = errParse;
+    return;
   }
   int size = 0;
 
@@ -266,12 +293,10 @@ int craftResp(struct httpResponse *resp, char *respBuff, int respBuffSize, int *
   assert(size < respBuffSize);
 
   *err = errOk;
-  return size;
 }
 
 // parses incoming httpRequest from reqBuff to the httpRequest struct
-// returns reqBuffSize size
-int parseHttpRequest(struct httpRequest *req, char *reqBuff, int reqBuffSize, int *err) {
+void parseHttpRequest(struct httpRequest *req, char *reqBuff, int reqBuffSize, int *err) {
   #ifdef DEBUG
   printf("------------ request -------------\n");
   printf("%s \n", reqBuff);
@@ -296,10 +321,18 @@ int parseHttpRequest(struct httpRequest *req, char *reqBuff, int reqBuffSize, in
       switch (iElement) {
         case 0:
           req->reqMethod = malloc(sizeof(char)*iElementSize);
+          if (req->reqMethod == NULL) {
+            *err = errMemAlloc;
+            return;
+          }
           memcpy(req->reqMethod, reqBuff+iElementUsedMem, iElementSize);  /* Flawfinder: ignore */ // in the line above memory is adequately allocated
           break;
         case 1:
           req->requestUri = malloc(sizeof(char)*iElementSize);
+          if (req->requestUri == NULL) {
+            *err = errMemAlloc;
+            return;
+          }
           memcpy(req->requestUri, reqBuff+iElementUsedMem, iElementSize);/* Flawfinder: ignore */ // in the line above memory is adequately allocated
           removeSpaces(req->requestUri, iElementSize);
           break;
@@ -320,7 +353,6 @@ int parseHttpRequest(struct httpRequest *req, char *reqBuff, int reqBuffSize, in
   }
 
   *err = errOk;
-  return iElementUsedMem;
 }
 
 // inits the webserver struct on given port
@@ -330,7 +362,6 @@ void wsInit(webserver *wserver, int port, int *err) {
 
   if ((wserver->wserverSocket = socket(AF_INET, SOCK_STREAM, 0)) < 0)
   {
-    wsLog("socket err \n");
     *err = errNet;
     return;
   }
@@ -344,14 +375,12 @@ void wsInit(webserver *wserver, int port, int *err) {
 
   if (bind(wserver->wserverSocket, (struct sockaddr *)&wserver->server, sizeof(wserver->server)) < 0)
   {
-    wsLog("http server socket binding err \n");
     *err = errNet;
     return;
   }
 
   if (listen(wserver->wserverSocket, 1) != 0)
   {
-    wsLog("http server init listen err \n");
     *err = errNet;
     return;
   }
@@ -389,6 +418,11 @@ void *clientHandle(void *args) {
   char *respBuff = malloc(sizeof(char)*WS_BUFF_SIZE);
   struct httpRequest *httpReq = malloc(sizeof (struct httpRequest));
   struct httpResponse *httpResp = malloc(sizeof (struct httpResponse));
+  if (readBuff == NULL || respBuff == NULL || httpReq == NULL || httpResp == NULL) {
+    printErr(errMemAlloc);
+    close(socket);
+    pthread_exit(NULL);
+  }
 
   int respSize, reqSize, sentBuffSize;
   int routeFound = 0;
@@ -400,22 +434,20 @@ void *clientHandle(void *args) {
   pthread_cleanup_push(freeClientThread, &freeArgs);
 
   if (readBuffSize == -1) {
-    wsLog("tcp read error \n");
-
+    printErr(errNet);
     close(socket);
     pthread_exit(NULL);
   }
   // sec checks
   if (readBuffSize >= WS_BUFF_SIZE) {
-    wsLog("http req exceeds buffer size \n");
-
+    printErr(errSecCheck);
     close(socket);
     pthread_exit(NULL);
   }
   // \0 terminating readBuffer
   readBuff[readBuffSize] = (char)0;
 
-  reqSize = parseHttpRequest(httpReq, readBuff, readBuffSize, &err);
+  parseHttpRequest(httpReq, readBuff, readBuffSize, &err);
   if (err != errOk){
     printErr(err);
 
@@ -433,15 +465,16 @@ void *clientHandle(void *args) {
 
   pthread_mutex_lock(&argss->wserver->mutexLock);
   for (int i = 0; i < argss->wserver->nRoutes; i++) {
+    // not a mem alloc error (which is already handled by parseHttpRequest) has never been allocated instead due to a parsing issue
     if (!httpReq->requestUri) {
-      wsLog("invalid request \n");
+      printErr(errParse);
       close(socket);
       pthread_mutex_unlock(&argss->wserver->mutexLock);
       pthread_exit(NULL);
     }
     if (strcmp(argss->wserver->routes[i]->path, httpReq->requestUri) == 0) {
       routeFound = 1;
-      respSize = craftResp(argss->wserver->routes[i]->httpResp, respBuff, WS_BUFF_SIZE, &err);
+      craftResp(argss->wserver->routes[i]->httpResp, respBuff, WS_BUFF_SIZE, &err);
       if (err != errOk) {
         printErr(err);
 
@@ -470,7 +503,7 @@ void *clientHandle(void *args) {
     httpResp->contentBuff = "404 page not found";
 
     httpResp->contentSize = strlen(httpResp->contentBuff); /* Flawfinder: ignore */ // \0 termination set in the line above
-    respSize = craftResp(httpResp, respBuff, WS_BUFF_SIZE, &err);
+    craftResp(httpResp, respBuff, WS_BUFF_SIZE, &err);
     if (err != errOk){
       printErr(err);
 
@@ -506,8 +539,7 @@ void wsListen(webserver *wserver, int *err) {
   struct sockaddr_in tempClient;
 
   if (pthread_mutex_init(&wserver->mutexLock, NULL) != 0) {
-    wsLog("mutex init failed \n");
-    *err = errFailed;
+    *err = errInit;
     return;
   }
 
@@ -516,13 +548,17 @@ void wsListen(webserver *wserver, int *err) {
   int newSocket;
   socklen_t addr_size;
   wserver->clientThreads = malloc(sizeof(struct clientThreadState));
-  for (int v = 0; v <= 50; v++) {
-  // while (1) {
+  if (wserver->clientThreads == NULL) {
+    printErr(errMemAlloc);
+    pthread_exit(NULL);
+  }
+  // for (int v = 0; v <= 50; v++) {
+  while (1) {
     addr_size = sizeof tempClient;
     newSocket = accept(wserver->wserverSocket, (struct sockaddr *) &tempClient, &addr_size);
     if (newSocket == -1) {
-      wsLog("tcp accept error \n");
       *err = errNet;
+      printErr(*err);
       return;
     }
     wsLog("new client connected \n");
@@ -542,12 +578,22 @@ void wsListen(webserver *wserver, int *err) {
     }
     // freed when thread is dead
     struct pthreadClientHandleArgs *clientArgs = malloc(sizeof clientArgs);
+    if (clientArgs == NULL) {
+      printErr(errMemAlloc);
+      close(newSocket);
+      pthread_exit(NULL);
+    }
     clientArgs->wserver = wserver;
     clientArgs->socket = newSocket;
     clientArgs->alive = 1;
 
     wserver->clientThreads[wserver->clientIdThreadCounter].args = clientArgs;
     wserver->clientThreads[wserver->clientIdThreadCounter].clientThread = malloc(sizeof(pthread_t));
+    if (wserver->clientThreads[wserver->clientIdThreadCounter].clientThread == NULL) {
+      printErr(errMemAlloc);
+      close(clientArgs->socket);
+      pthread_exit(NULL);
+    }
 
     if(pthread_create(wserver->clientThreads[wserver->clientIdThreadCounter].clientThread, NULL, clientHandle, (void*)wserver->clientThreads[wserver->clientIdThreadCounter].args) != 0 ) {
       wsLog("thread create error \n");
@@ -589,24 +635,50 @@ void freeWs(webserver *wserver) {
 int main() {
   int err = errOk;
   webserver *wserver = malloc(sizeof *wserver);
+  if (wserver == NULL) {
+    printErr(errMemAlloc);
+    return EXIT_FAILURE;
+  }
 
   wsInit(wserver, 8080, &err);
   if (err != errOk) {
     printErr(err);
-    return 1;
+    freeWs(wserver);
+    return EXIT_FAILURE;
   }
   wsLog("server initiated \n");
 
   struct httpResponse *mainRouteResponse = malloc(sizeof *mainRouteResponse);
+  if (mainRouteResponse == NULL) {
+    printErr(errMemAlloc);
+    freeWs(wserver);
+    return EXIT_FAILURE;
+  }
   mainRouteResponse->statusCode = 200;
   mainRouteResponse->reasonPhrase = "succ";
   mainRouteResponse->contentBuff = "Hai";
   mainRouteResponse->contentSize = 3;
-  struct httpRoute *mainRoute = createRoute("/", "GET", mainRouteResponse);
-  addRouteToWs(wserver, mainRoute);
+  struct httpRoute *mainRoute = createRoute("/", "GET", mainRouteResponse, &err);
+  if (err != errOk) {
+    printErr(err);
+    freeWs(wserver);
+    return EXIT_FAILURE;
+  }
+
+  addRouteToWs(wserver, mainRoute, &err);
+  if (err != errOk) {
+    printErr(err);
+    freeWs(wserver);
+    return EXIT_FAILURE;
+  }
 
 
   struct httpResponse *routeResponse = malloc(sizeof *routeResponse);
+  if (routeResponse == NULL) {
+    printErr(errMemAlloc);
+    freeWs(wserver);
+    return EXIT_FAILURE;
+  }
   routeResponse->statusCode = 200;
   routeResponse->reasonPhrase = "succ";
   // by marking it as file, the dynamically allocated memory from the file buffer gets freed
@@ -615,17 +687,27 @@ int main() {
   if (err != errOk) {
     printErr(err);
     freeWs(wserver);
-    return 1;
+    return EXIT_FAILURE;
   }
-  struct httpRoute *route = createRoute("/testPage", "GET", routeResponse);
-  addRouteToWs(wserver, route);
+
+  struct httpRoute *route = createRoute("/testPage", "GET", routeResponse, &err);
+  if (err != errOk) {
+    printErr(err);
+    freeWs(wserver);
+    return EXIT_FAILURE;
+  }
+  addRouteToWs(wserver, route, &err);
+  if (err != errOk) {
+    printErr(err);
+    freeWs(wserver);
+    return EXIT_FAILURE;
+  }
 
   wsListen(wserver, &err);
   if (err != errOk) {
     printErr(err);
-
     freeWs(wserver);
-    return 1;
+    return EXIT_FAILURE;
   }
 
   freeWs(wserver);
