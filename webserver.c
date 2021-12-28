@@ -1,4 +1,3 @@
- #include <sys/socket.h>
 #include <netdb.h>
 #include <stdio.h>
 #include <stdarg.h>
@@ -7,11 +6,11 @@
 #include <pthread.h>
 #include <unistd.h>
 #include <assert.h>
-#include <signal.h>
-
-#include <unistd.h>
 
 // #define DEBUG 1
+
+
+/* webserver parameters */
 
 // defines version contained within the client reply
 #define HTTP_VERSION "1.0"
@@ -19,19 +18,21 @@
 // defines used logstream
 #define LOG_STREAM stdout
 
-// client request buffer size
+// webserver buffer size
 #define WS_BUFF_SIZE 1024
 
-// logging and static len vars
-#define MAX_HTTP_METHOD_LEN 10
+/* parsing parameter */
 
 // important string parsing literals
 #define CR 0x0D
 #define LF 0x0A
 #define SP 0x20
 
-// parsing consts
+// http request line length
 #define HTTP_REQ_LINE_LEN 3
+
+
+/* declarations */
 
 struct clientThreadState {
   struct pthreadClientHandleArgs *args;
@@ -69,14 +70,16 @@ enum errReturnCode {
   errIO
 };
 
-struct httpRoute {
-  char *path;
-  char *method;
-  struct httpResponse *httpResp;
+enum httpMethod {
+  httpGet,
+  httpPost
 };
 
-
-char httpMethods[][MAX_HTTP_METHOD_LEN] = { "GET", "POST" };
+struct httpRoute {
+  char *path;
+  int method;
+  struct httpResponse *httpResp;
+};
 
 struct httpResponse {
   int statusCode;
@@ -88,7 +91,7 @@ struct httpResponse {
 
 struct httpRequest {
   float httpVersion;
-  char *reqMethod;
+  int reqMethod;
   char *requestUri;
 };
 
@@ -135,7 +138,7 @@ void wsLog(const char* format, ...) {
 // declares&inits route struct
 // defines route struct attr
 // returns reference to route struct
-struct httpRoute *createRoute(char *path, char *method, struct httpResponse *resp, int *err) {
+struct httpRoute *createRoute(char *path, int method, struct httpResponse *resp, int *err) {
   struct httpRoute *route = malloc(sizeof *route);
   if (route == NULL) {
     *err = errMemAlloc;
@@ -148,13 +151,7 @@ struct httpRoute *createRoute(char *path, char *method, struct httpResponse *res
   }
   strcpy(route->path, path);
 
-  route->method = malloc(sizeof(char) * MAX_HTTP_METHOD_LEN);
-  if (route->method == NULL) {
-    *err = errMemAlloc;
-    return NULL;
-  }
-  strcpy(route->method, path);
-
+  route->method = method;
   route->httpResp = resp;
 
   return route;
@@ -167,7 +164,6 @@ void freeRoutes(webserver *ws) {
       free(ws->routes[i]->httpResp->contentBuff);
     }
     free(ws->routes[i]->httpResp);
-    free(ws->routes[i]->method);
     free(ws->routes[i]->path);
     free(ws->routes[i]);
   }
@@ -320,12 +316,9 @@ void parseHttpRequest(struct httpRequest *req, char *reqBuff, int reqBuffSize, i
       }
       switch (iElement) {
         case 0:
-          req->reqMethod = malloc(sizeof(char)*iElementSize);
-          if (req->reqMethod == NULL) {
-            *err = errMemAlloc;
-            return;
+          if (strncmp(reqBuff+iElementUsedMem, "GET", iElementSize) == 0) {
+            req->reqMethod = httpGet;
           }
-          memcpy(req->reqMethod, reqBuff+iElementUsedMem, iElementSize);  /* Flawfinder: ignore */ // in the line above memory is adequately allocated
           break;
         case 1:
           req->requestUri = malloc(sizeof(char)*iElementSize);
@@ -395,7 +388,6 @@ void freeClientThread(void *args) {
   free(argss->respBuff);
 
   free(argss->httpReq->requestUri);
-  free(argss->httpReq->reqMethod);
   free(argss->httpReq);
 
   // other members are already free in response craft
@@ -458,7 +450,7 @@ void *clientHandle(void *args) {
   #ifdef DEBUG
   printf("------------ parsed request -------------\n");
   printf("http version: %f \n", httpReq->httpVersion);
-  printf("req method: %s \n", httpReq->reqMethod);
+  printf("req method: %d \n", httpReq->reqMethod);
   printf("req uri: %s \n", httpReq->requestUri);
   printf("------------ parsed request -------------\n");
   #endif
@@ -496,7 +488,7 @@ void *clientHandle(void *args) {
   pthread_mutex_unlock(&argss->wserver->mutexLock);
 
   if (!routeFound) {
-    wsLog("page not found");
+    wsLog("page not found \n");
     httpResp->statusCode = 404;
 
     httpResp->reasonPhrase = "err";
@@ -547,12 +539,17 @@ void wsListen(webserver *wserver, int *err) {
 
   int newSocket;
   socklen_t addr_size;
+
+  // index 0 is never freed (except for exit)
   wserver->clientThreads = malloc(sizeof(struct clientThreadState));
   if (wserver->clientThreads == NULL) {
     printErr(errMemAlloc);
     pthread_exit(NULL);
   }
-  // for (int v = 0; v <= 50; v++) {
+
+  // // only for debugging purposes if the wserver needs to stop after n requests
+  // for (int n = 0; n <= 5; n++) {
+
   while (1) {
     addr_size = sizeof tempClient;
     newSocket = accept(wserver->wserverSocket, (struct sockaddr *) &tempClient, &addr_size);
@@ -575,7 +572,14 @@ void wsListen(webserver *wserver, int *err) {
 
     if (wserver->clientIdThreadCounter != 0) {
       wserver->clientThreads = realloc(wserver->clientThreads, sizeof(struct clientThreadState)*(wserver->clientIdThreadCounter+1));
+      if (wserver->clientThreads == NULL) {
+        printErr(errMemAlloc);
+        close(newSocket);
+        pthread_exit(NULL);
+      }
     }
+
+
     // freed when thread is dead
     struct pthreadClientHandleArgs *clientArgs = malloc(sizeof clientArgs);
     if (clientArgs == NULL) {
@@ -596,14 +600,14 @@ void wsListen(webserver *wserver, int *err) {
     }
 
     if(pthread_create(wserver->clientThreads[wserver->clientIdThreadCounter].clientThread, NULL, clientHandle, (void*)wserver->clientThreads[wserver->clientIdThreadCounter].args) != 0 ) {
-      wsLog("thread create error \n");
       *err = errIO;
       return;
     } else {
+      // cleanup routine
       struct clientThreadState tempThreadState;
       for (int i = 0; i <= wserver->clientIdThreadCounter; i++) {
         pthread_mutex_lock(&wserver->mutexLock);
-        if (!wserver->clientThreads[i].args->alive && i != 0) {
+        if (!wserver->clientThreads[i].args->alive) {
           // moving threadState ref to the end of the array in order to be able to free the mem
           tempThreadState = wserver->clientThreads[i];
           wserver->clientThreads[i] = wserver->clientThreads[wserver->clientIdThreadCounter];
@@ -616,10 +620,23 @@ void wsListen(webserver *wserver, int *err) {
         }
         pthread_mutex_unlock(&wserver->mutexLock);
       }
-      wserver->clientThreads = realloc(wserver->clientThreads, sizeof(struct clientThreadState)*(wserver->clientIdThreadCounter+1));
+      if (wserver->clientIdThreadCounter != 0) {
+        wserver->clientThreads = realloc(wserver->clientThreads, sizeof(struct clientThreadState)*(wserver->clientIdThreadCounter+1));
+        if (wserver->clientThreads == NULL) {
+          printErr(errMemAlloc);
+          close(newSocket);
+          pthread_exit(NULL);
+        }
+      }
     }
-  wserver->clientIdThreadCounter++;
+    wserver->clientIdThreadCounter++;
   }
+
+  // freeing last remaining client Thread State which is not freed in the clenup routine
+  free(wserver->clientThreads->clientThread);
+  free(wserver->clientThreads->args);
+  free(wserver->clientThreads);
+
   *err = errOk;
 }
 
@@ -658,7 +675,7 @@ int main() {
   mainRouteResponse->reasonPhrase = "succ";
   mainRouteResponse->contentBuff = "Hai";
   mainRouteResponse->contentSize = 3;
-  struct httpRoute *mainRoute = createRoute("/", "GET", mainRouteResponse, &err);
+  struct httpRoute *mainRoute = createRoute("/", httpGet, mainRouteResponse, &err);
   if (err != errOk) {
     printErr(err);
     freeWs(wserver);
@@ -690,7 +707,7 @@ int main() {
     return EXIT_FAILURE;
   }
 
-  struct httpRoute *route = createRoute("/testPage", "GET", routeResponse, &err);
+  struct httpRoute *route = createRoute("/testPage", httpGet, routeResponse, &err);
   if (err != errOk) {
     printErr(err);
     freeWs(wserver);
