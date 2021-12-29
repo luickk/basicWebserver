@@ -31,6 +31,11 @@
 // http request line length
 #define HTTP_REQ_LINE_LEN 3
 
+/* testing functions */
+
+int testParsing();
+int testCreateRoute();
+int testWsInitAndFree();
 
 /* declarations */
 
@@ -422,9 +427,9 @@ void *clientHandle(void *args) {
   wsLog("new client thread created \n");
 
   int readBuffSize = read(socket, readBuff, WS_BUFF_SIZE); /* Flawfinder: ignore */ // buffer-overlow check follows in sec-checks
+
   struct freeClientThreadArgs freeArgs = {.httpReq = httpReq, .httpResp = httpResp, .clientHandleArgs = argss, .readBuff = readBuff, .respBuff = respBuff};
   pthread_cleanup_push(freeClientThread, &freeArgs);
-
   if (readBuffSize == -1) {
     printErr(errNet);
     close(socket);
@@ -646,6 +651,11 @@ void freeWs(webserver *wserver) {
   free(wserver);
 }
 
+
+
+// /* tests */
+
+
 /*
  * Server Main.
  */
@@ -665,7 +675,7 @@ int main() {
   }
   wsLog("server initiated \n");
 
-  struct httpResponse *mainRouteResponse = malloc(sizeof *mainRouteResponse);
+  struct httpResponse *mainRouteResponse = malloc(sizeof(struct httpResponse));
   if (mainRouteResponse == NULL) {
     printErr(errMemAlloc);
     freeWs(wserver);
@@ -719,7 +729,7 @@ int main() {
     freeWs(wserver);
     return EXIT_FAILURE;
   }
-
+  
   wsListen(wserver, &err);
   if (err != errOk) {
     printErr(err);
@@ -728,5 +738,98 @@ int main() {
   }
 
   freeWs(wserver);
+  return 0;
+}
+
+int testParsing() {
+  int err = 0;
+
+  char parsingTestString[] = "GET /testPage HTTP/1.1\n\
+Host: localhost:8080\n\
+User-Agent: Mozilla/5.0 (Macintosh; Intel Mac OS X 10.15; rv:95.0) Gecko/20100101 Firefox/95.0\n\
+Accept: text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8\n\
+Accept-Language: de,en-US;q=0.7,en;q=0.3\n\
+Accept-Encoding: gzip, deflate\n\
+Connection: keep-alive\n\
+Upgrade-Insecure-Requests: 1\n\
+Sec-Fetch-Dest: document\n\
+Sec-Fetch-Mode: navigate\n\
+Sec-Fetch-Site: none\n\
+Sec-Fetch-User: ?1\n\
+Cache-Control: max-age=0\n\
+\n\
+";
+
+  struct httpRequest *httpReq = malloc(sizeof (struct httpRequest));
+
+  parseHttpRequest(httpReq, parsingTestString, 487, &err);
+  if (err != errOk){
+    return 1;
+  }
+
+  if (httpReq->httpVersion != 1.1 && httpReq->reqMethod != 0)  {
+    return 1;
+  }
+
+  if (strcmp(httpReq->requestUri, "/testPage") != 0) {
+    return 1;
+  }
+
+  return 0;
+}
+
+
+int testCreateRoute() {
+  int err = 0;
+  struct httpResponse *testRouteResponse = malloc(sizeof(struct httpResponse));
+  if (testRouteResponse == NULL) {
+    return 1;
+  }
+  testRouteResponse->statusCode = 200;
+  testRouteResponse->reasonPhrase = "test";
+  testRouteResponse->contentBuff = "test";
+  testRouteResponse->contentSize = 4;
+  struct httpRoute *testRoute = createRoute("/test", httpGet, testRouteResponse, &err);
+  if (err != errOk) {
+    return 1;
+  }
+  free(testRoute->path);
+  free(testRoute);
+  free(testRouteResponse);
+  return 0;
+}
+
+int testWsInitAndFree() {
+  int err = 0;
+  webserver *wserver = malloc(sizeof *wserver);
+  if (wserver == NULL) {
+    return 1;
+  }
+
+  wsInit(wserver, 8080, &err);
+  if (err != errOk) {
+    return 1;
+  }
+
+  struct httpResponse *testRouteResponse = malloc(sizeof(struct httpResponse));
+  if (testRouteResponse == NULL) {
+    return 1;
+  }
+  testRouteResponse->statusCode = 200;
+  testRouteResponse->reasonPhrase = "test";
+  testRouteResponse->contentBuff = "test";
+  testRouteResponse->contentSize = 4;
+  struct httpRoute *mainRoute = createRoute("/", httpGet, testRouteResponse, &err);
+  if (err != errOk) {
+    return 1;
+  }
+
+  addRouteToWs(wserver, mainRoute, &err);
+  if (err != errOk) {
+    return 1;
+  }
+
+  freeWs(wserver);
+
   return 0;
 }

@@ -1,6 +1,6 @@
 # Simple Webserver
 
-The webserver is implemented by the HTTP specification which can be found [here](https://datatracker.ietf.org/doc/html/rfc2616) and uses only standard C libraries. The webserver has only minor support for http features.
+The webserver is a minimal implementation of the HTTP specification which can be found [here](https://datatracker.ietf.org/doc/html/rfc2616) and uses only standard C libraries. The webserver has only minor support for http features.
 The project was improved(or at least analyzed) by tools such as Valgrind to ensure memory safety and FlawFinder for a basic static analysis of common security issue patterns.
 The goal of the project is to build a *thread safe, memory efficient and fast as well as secure webserver* by considering good practices and common safety concepts.  
 
