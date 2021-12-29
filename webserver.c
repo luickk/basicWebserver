@@ -36,6 +36,7 @@
 int testParsing();
 int testCreateRoute();
 int testWsInitAndFree();
+int testRespCraft();
 
 /* declarations */
 
@@ -62,7 +63,6 @@ struct pthreadClientHandleArgs {
   int socket;
   int alive;
 };
-
 
 enum errReturnCode {
   errOk,
@@ -206,8 +206,7 @@ int sendBuffer(int sock, char *buff, int buffSize, int *err) {
   int sendLeft = buffSize;
   int dataSent = 0;
   int rc;
-  while (sendLeft > 0)
-  {
+  while (sendLeft > 0) {
     rc = send(sock, buff+(buffSize-sendLeft), sendLeft, 0);
     if (rc == -1) {
       *err = errNet;
@@ -358,8 +357,7 @@ void parseHttpRequest(struct httpRequest *req, char *reqBuff, int reqBuffSize, i
 void wsInit(webserver *wserver, int port, int *err) {
   wserver->port = port;
 
-  if ((wserver->wserverSocket = socket(AF_INET, SOCK_STREAM, 0)) < 0)
-  {
+  if ((wserver->wserverSocket = socket(AF_INET, SOCK_STREAM, 0)) < 0) {
     *err = errNet;
     return;
   }
@@ -371,14 +369,12 @@ void wsInit(webserver *wserver, int port, int *err) {
   wserver->mutexLock = (pthread_mutex_t)PTHREAD_MUTEX_INITIALIZER;
   wserver->clientIdThreadCounter = 0;
 
-  if (bind(wserver->wserverSocket, (struct sockaddr *)&wserver->server, sizeof(wserver->server)) < 0)
-  {
+  if (bind(wserver->wserverSocket, (struct sockaddr *)&wserver->server, sizeof(wserver->server)) < 0) {
     *err = errNet;
     return;
   }
 
-  if (listen(wserver->wserverSocket, 1) != 0)
-  {
+  if (listen(wserver->wserverSocket, 1) != 0) {
     *err = errNet;
     return;
   }
@@ -427,9 +423,6 @@ void *clientHandle(void *args) {
   wsLog("new client thread created \n");
 
   int readBuffSize = read(socket, readBuff, WS_BUFF_SIZE); /* Flawfinder: ignore */ // buffer-overlow check follows in sec-checks
-
-  struct freeClientThreadArgs freeArgs = {.httpReq = httpReq, .httpResp = httpResp, .clientHandleArgs = argss, .readBuff = readBuff, .respBuff = respBuff};
-  pthread_cleanup_push(freeClientThread, &freeArgs);
   if (readBuffSize == -1) {
     printErr(errNet);
     close(socket);
@@ -443,6 +436,9 @@ void *clientHandle(void *args) {
   }
   // \0 terminating readBuffer
   readBuff[readBuffSize] = (char)0;
+
+  struct freeClientThreadArgs freeArgs = {.httpReq = httpReq, .httpResp = httpResp, .clientHandleArgs = argss, .readBuff = readBuff, .respBuff = respBuff};
+  pthread_cleanup_push(freeClientThread, &freeArgs);
 
   parseHttpRequest(httpReq, readBuff, readBuffSize, &err);
   if (err != errOk){
@@ -472,6 +468,8 @@ void *clientHandle(void *args) {
     if (strcmp(argss->wserver->routes[i]->path, httpReq->requestUri) == 0) {
       routeFound = 1;
       craftResp(argss->wserver->routes[i]->httpResp, respBuff, WS_BUFF_SIZE, &err);
+
+
       if (err != errOk) {
         printErr(err);
 
@@ -651,16 +649,12 @@ void freeWs(webserver *wserver) {
   free(wserver);
 }
 
-
-
-// /* tests */
-
-
 /*
  * Server Main.
  */
 int main() {
   int err = errOk;
+  
   webserver *wserver = malloc(sizeof *wserver);
   if (wserver == NULL) {
     printErr(errMemAlloc);
@@ -729,7 +723,7 @@ int main() {
     freeWs(wserver);
     return EXIT_FAILURE;
   }
-  
+
   wsListen(wserver, &err);
   if (err != errOk) {
     printErr(err);
@@ -738,6 +732,38 @@ int main() {
   }
 
   freeWs(wserver);
+  return 0;
+}
+
+
+// /* tests */
+
+int testRespCraft() {
+  int err = 0;
+  struct httpResponse *testRouteResponse = malloc(sizeof(struct httpResponse));
+  if (testRouteResponse == NULL) {
+    return 1;
+  }
+  char *respBuff = malloc(sizeof(char)*WS_BUFF_SIZE);
+  if (respBuff == NULL) {
+    return 1;
+  }
+  testRouteResponse->statusCode = 200;
+  testRouteResponse->reasonPhrase = "succ";
+  testRouteResponse->contentBuff = "Hai";
+  testRouteResponse->contentSize = 3;
+  craftResp(testRouteResponse, respBuff, WS_BUFF_SIZE, &err);
+
+  char craftedResponse[] = "HTTP/1.0 200 succ\r\n\
+Content-type: text/html, text, plain\r\n\
+Content-length: 3\r\n\
+\r\n\
+Hai";
+
+  if (strcmp(respBuff, craftedResponse) != 0) {
+    printf("NOT THE SAME \n");
+    return 1;
+  }
   return 0;
 }
 
@@ -761,7 +787,9 @@ Cache-Control: max-age=0\n\
 ";
 
   struct httpRequest *httpReq = malloc(sizeof (struct httpRequest));
-
+  if (httpReq == NULL) {
+    return 1;
+  }
   parseHttpRequest(httpReq, parsingTestString, 487, &err);
   if (err != errOk){
     return 1;
@@ -828,8 +856,6 @@ int testWsInitAndFree() {
   if (err != errOk) {
     return 1;
   }
-
-  freeWs(wserver);
 
   return 0;
 }
