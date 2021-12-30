@@ -332,12 +332,15 @@ void parseHttpRequest(struct httpRequest *req, char *reqBuff, int reqBuffSize, i
           }
           memcpy(req->requestUri, reqBuff+iElementUsedMem, iElementSize);/* Flawfinder: ignore */ // in the line above memory is adequately allocated
           removeSpaces(req->requestUri, iElementSize);
+          req->requestUri[iElementSize] = 0;
           break;
         case 2:
           // extracing version number - http/x.x
-          // strtok directly used on reqBuff since it is the last parsed element
+          // !strtok directly used on reqBuff since it is the last parsed element!
+          // terminating character ensured by the clientThread which hands the reqBuff to this function
           tok = strtok(reqBuff+iElementUsedMem, "/");
           tok = strtok(NULL, "/");
+          // if conversion fails atof returns a 0.0 value - no other err handling possible
           req->httpVersion = atof(tok);
           endOfParse = 1;
           break;
@@ -654,7 +657,7 @@ void freeWs(webserver *wserver) {
  */
 int main() {
   int err = errOk;
-  
+
   webserver *wserver = malloc(sizeof *wserver);
   if (wserver == NULL) {
     printErr(errMemAlloc);
