@@ -18,18 +18,31 @@ The parsing is implemented in a very basic manner, not leveraging any library fu
 ### Security
 
 As declared at the beginning of this projects readme it's not meant to be used in any kind of professional or production environment. I'm neither a professional nor do I have sufficient experience in order to claim this project to be secure. In order to spot common vulnerability patterns I used the static analysis tool `flawfinder`.
-That said I (as always) tried to considered all the good practices and possible attack vectors. Since this webserver is not complex and only support very few features the only superficial vector would be the http request string.
+That said I (as always) tried to considered all the good practices and possible attack vectors. Since this webserver is not complex and only supports very few features the only superficial vector would be the http request string.
 
 Apart from buffer overflows, 0 character escape the parsing is probably the most crucial and worrying part. In order to build something simple that does not open up too many eventualities I went with a character iterating loop which only checks for the 3 (SP,CR,LF) separating characters and copies/ parses the memory of the mem space in between. The only deciding information on which basis the parsing happens is the length (index difference)between the separation characters thus this is the only exploitable "interface" and is limited by the request buffer size. Every anomaly from the request protocol will result in an immediate abort. The introduction of malicious information in the parsed memory should be irrelevant since this memory is not interpreted in anyway afterwards(except for the versions strtok and character removal wichs common vulnerabilities were considered).
 
 ### Memory Safety
 
-To ensure safety I applied common static and dynamic analysis tools such as `leaks`, `valgrind` and memory surveillance. The webserver leaks no memory neither at runtime nor on close and makes use of one mutex lock. To achieve threads which scale dynamically and are not limited by a statically sized buffer I created an array of references which links to a state struct in which a bool indicates wether the referenced thread is done and can be freed. If so all connected allocations for the thread are freed including its pthread id array index. That is done by reallocating the array and shrinking it that way.
+To ensure safety I applied common static and dynamic analysis tools such as `leaks`, `valgrind` and memory surveillance. The webserver leaks no memory neither at runtime nor on close and makes use of one mutex lock. When choosing data types and struct components the memory alignment has been considered. To achieve threads which scale dynamically and are not limited by a statically sized buffer I created an array of references which links to a state struct in which a bool indicates wether the referenced thread is done and can be freed. If so all connected allocations for the thread are freed including its pthread id array index. That is done by reallocating the array and shrinking it that way.
 The threads themselves make use of the pthread_cleanup queue to ensure that the allocated memory is properly freed.
+
+### Testing
+
+As already stated in the beginning the webserver is written in a way that makes it easily usable as a static library. As such all the functions are testable and tests are implemented and can be found below the main function. The tests cover all functions except for the networking and printing IO functions.
 
 ### Naming convention
 
 Since I got introduced to static programming through go I also adopted the camelcase naming convention since I find it the most readable. I know that this is not compliant with C standard but as already said this is a fun project of mine only for learning purposes.
+
+
+### Things to improve
+
+- Payload testing <br>
+There is a huge stack of untested scenarios concerning the content or other edge cases concerning the encoding and data quantity.
+
+- Error handling <br>
+Another crucial untreated part of the project is that errors are catched and returned but most of the time the project quits runtime instead of trying to recover. This is most obvious in the memory allocation handling.
 
 ## Build
 
