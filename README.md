@@ -17,15 +17,24 @@ The parsing is implemented in a very basic manner, not leveraging any library fu
 
 ### Security
 
-As declared at the beginning of this projects readme it's not meant to be used in any kind of professional or production environment. I'm neither a professional nor do I have sufficient experience in order to claim this project to be secure.
+As declared at the beginning of this projects readme it's not meant to be used in any kind of professional or production environment. I'm neither a professional nor do I have sufficient experience in order to claim this project to be secure. In order to spot common vulnerability patterns I used the static analysis tool `flawfinder`.
 That said I (as always) tried to considered all the good practices and possible attack vectors. Since this webserver is not complex and only support very few features the only superficial vector would be the http request string.
 
 Apart from buffer overflows, 0 character escape the parsing is probably the most crucial and worrying part. In order to build something simple that does not open up too many eventualities I went with a character iterating loop which only checks for the 3 (SP,CR,LF) separating characters and copies/ parses the memory of the mem space in between. The only deciding information on which basis the parsing happens is the length (index difference)between the separation characters thus this is the only exploitable "interface" and is limited by the request buffer size. Every anomaly from the request protocol will result in an immediate abort. The introduction of malicious information in the parsed memory should be irrelevant since this memory is not interpreted in anyway afterwards(except for the versions strtok and character removal wichs common vulnerabilities were considered).
 
-Feature support:
-- dynamic route creation
-- dynamic client request threads
-- multi-client support
-- buffer & file read response
-- static header response
-- GET method
+### Memory Safety
+
+To ensure safety I applied common static and dynamic analysis tools such as `leaks`, `valgrind` and memory surveillance. The webserver leaks no memory neither at runtime nor on close and makes use of one mutex lock. To achieve threads which scale dynamically and are not limited by a statically sized buffer I created an array of references which links to a state struct in which a bool indicates wether the referenced thread is done and can be freed. If so all connected allocations for the thread are freed including its pthread id array index. That is done by reallocating the array and shrinking it that way.
+The threads themselves make use of the pthread_cleanup queue to ensure that the allocated memory is properly freed.
+
+### Naming convention
+
+Since I got introduced to static programming through go I also adopted the camelcase naming convention since I find it the most readable. I know that this is not compliant with C standard but as already said this is a fun project of mine only for learning purposes.
+
+## Build
+
+The webserver can be built and run with the buildNrun bash. <br>
+`bash buildNrun.sh`
+
+Alternatively it can also be built directly by using cmake.
+The project has no non standard dependencies and has been built using Clang and C14.
