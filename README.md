@@ -1,6 +1,6 @@
 # Simple Webserver
 
-The webserver is a minimal implementation of a webserver (by the HTTP specification which can be found [here](https://datatracker.ietf.org/doc/html/rfc2616)) and uses only standard C libraries. The webserver has only minimal support for http features. The webservers main features is routes with individual responses and dynamically scaling client request handling(threads scale dynamically according to the amount of requests with a cleanup routine and are not buffered(compromise between performance and memory efficiency). The only supported request method is GET with no parsing of query parameters. It's a fun project of mine and although I tried to write a usable and safe application due to the complex nature of C I cannot guarantee for anything especially security.
+The webserver is a minimal implementation of a webserver (by the HTTP specification which can be found [here](https://datatracker.ietf.org/doc/html/rfc2616)) and uses only standard C libraries. The webserver has only minimal support for http features. The webservers main features is routes with individual responses and dynamic client request handling. The only supported request method is GET with no parsing of query parameters. It's a fun project of mine and although I tried to write a usable and safe application due to the complex nature of C I cannot guarantee for anything, especially not security.
 
 The goal of the project is to write a minimal C webserver which maximizes on performance, security and memory safety.
 
@@ -8,6 +8,7 @@ Since part of the idea was to write something with a small footprint the whole p
 The project is not meant to be used as a library but can be easily reused as one since the complete project is strictly statically written and everything is isolated from the execution context (all the functions are usable in a static library manner).
 
 ### Performance
+
 The response and request buffer are both statically buffered. I thought about making the response buffer dynamically allocated in oder to be flexible with potential greater response payloads but decided that if this application would be used, this would happen in specific context in which the range of response sizes is not too great which would outweigh the performance decrease of a dynamically managed response.
 
 Since I don't have any experience with writing software which has to handle huge bandwidths of requests and I still wanted to keep this project able to handle request spikes I the threads scale dynamically and are not limited by a statically sized buffer of max client threads.
@@ -24,8 +25,7 @@ Apart from buffer overflows, 0 character escape the parsing is probably the most
 
 ### Memory Safety
 
-To ensure safety I applied common static and dynamic analysis tools such as `leaks`, `valgrind` and memory surveillance. The webserver leaks no memory neither at runtime nor on close and makes use of one mutex lock. When choosing data types and struct components the memory alignment has been considered. To achieve threads which scale dynamically and are not limited by a statically sized buffer I created an array of references which links to a state struct in which a bool indicates wether the referenced thread is done and can be freed. If so all connected allocations for the thread are freed including its pthread id array index. That is done by reallocating the array and shrinking it that way.
-The threads themselves make use of the pthread_cleanup queue to ensure that the allocated memory is properly freed.
+To ensure safety I applied common static and dynamic analysis tools such as `leaks`, `valgrind` and memory surveillance. The webserver leaks no memory neither at runtime nor on close and makes use of one mutex lock. When choosing data types and struct components the memory alignment has been considered. To ensure a thorough memory cleanup even if a thread crashes the threads make use of the pthread_cleanup queue to ensure that the allocated memory is properly freed.
 
 ### Testing
 
@@ -38,7 +38,7 @@ Since I got introduced to static programming through go I also adopted the camel
 
 ### Things to improve
 
-- Payload testing <br>
+- Fuzzing/ Payload testing <br>
 There is a huge stack of untested scenarios concerning the content or other edge cases concerning the encoding and data quantity.
 
 - Error handling <br>

@@ -40,28 +40,21 @@ int testRespCraft();
 
 /* declarations */
 
-struct clientThreadState {
-  struct pthreadClientHandleArgs *args;
-  pthread_t *clientThread;
-};
-
 typedef struct {
   struct sockaddr_in server;
-  struct clientThreadState *clientThreads;
   struct httpRoute **routes;
 
   int wserverSocket;
-  int clientIdThreadCounter;
   int nRoutes;
 
   pthread_mutex_t mutexLock;
+  pthread_t clientThread;
   unsigned short port;
 } webserver;
 
 struct pthreadClientHandleArgs {
   webserver *wserver;
   int socket;
-  int alive;
 };
 
 enum errReturnCode {
@@ -370,7 +363,6 @@ void wsInit(webserver *wserver, int port, int *err) {
   wserver->server.sin_addr.s_addr = INADDR_ANY;
 
   wserver->mutexLock = (pthread_mutex_t)PTHREAD_MUTEX_INITIALIZER;
-  wserver->clientIdThreadCounter = 0;
 
   if (bind(wserver->wserverSocket, (struct sockaddr *)&wserver->server, sizeof(wserver->server)) < 0) {
     *err = errNet;
@@ -394,12 +386,10 @@ void freeClientThread(void *args) {
   free(argss->httpReq->requestUri);
   free(argss->httpReq);
 
-  // other members are already free in response craft
+  // other members are already freed in response craft
   free(argss->httpResp);
 
-  pthread_mutex_lock(&argss->clientHandleArgs->wserver->mutexLock);
-  argss->clientHandleArgs->alive = 0;
-  pthread_mutex_unlock(&argss->clientHandleArgs->wserver->mutexLock);
+  free(argss->clientHandleArgs);
 }
 
 // the clientHandle thread waits for incoming request and crafts the reply accordingly
@@ -546,13 +536,6 @@ void wsListen(webserver *wserver, int *err) {
   int newSocket;
   socklen_t addr_size;
 
-  // index 0 is never freed (except for exit)
-  wserver->clientThreads = malloc(sizeof(struct clientThreadState));
-  if (wserver->clientThreads == NULL) {
-    printErr(errMemAlloc);
-    pthread_exit(NULL);
-  }
-
   // // only for debugging purposes if the wserver needs to stop after n requests
   // for (int n = 0; n <= 5; n++) {
 
@@ -576,72 +559,20 @@ void wsListen(webserver *wserver, int *err) {
     }
     #endif
 
-    if (wserver->clientIdThreadCounter != 0) {
-      wserver->clientThreads = realloc(wserver->clientThreads, sizeof(struct clientThreadState)*(wserver->clientIdThreadCounter+1));
-      if (wserver->clientThreads == NULL) {
-        printErr(errMemAlloc);
-        close(newSocket);
-        pthread_exit(NULL);
-      }
-    }
-
-
     // freed when thread is dead
     struct pthreadClientHandleArgs *clientArgs = malloc(sizeof clientArgs);
     if (clientArgs == NULL) {
       printErr(errMemAlloc);
       close(newSocket);
-      pthread_exit(NULL);
     }
     clientArgs->wserver = wserver;
     clientArgs->socket = newSocket;
-    clientArgs->alive = 1;
 
-    wserver->clientThreads[wserver->clientIdThreadCounter].args = clientArgs;
-    wserver->clientThreads[wserver->clientIdThreadCounter].clientThread = malloc(sizeof(pthread_t));
-    if (wserver->clientThreads[wserver->clientIdThreadCounter].clientThread == NULL) {
-      printErr(errMemAlloc);
-      close(clientArgs->socket);
-      pthread_exit(NULL);
-    }
-
-    if(pthread_create(wserver->clientThreads[wserver->clientIdThreadCounter].clientThread, NULL, clientHandle, (void*)wserver->clientThreads[wserver->clientIdThreadCounter].args) != 0 ) {
+    if(pthread_create(&wserver->clientThread, NULL, clientHandle, (void*)clientArgs) != 0 ) {
       *err = errIO;
       return;
-    } else {
-      // cleanup routine
-      struct clientThreadState tempThreadState;
-      for (int i = 0; i <= wserver->clientIdThreadCounter; i++) {
-        pthread_mutex_lock(&wserver->mutexLock);
-        if (!wserver->clientThreads[i].args->alive) {
-          // moving threadState ref to the end of the array in order to be able to free the mem
-          tempThreadState = wserver->clientThreads[i];
-          wserver->clientThreads[i] = wserver->clientThreads[wserver->clientIdThreadCounter];
-          wserver->clientThreads[wserver->clientIdThreadCounter] = tempThreadState;
-
-          // freeing threadState references
-          free(wserver->clientThreads[wserver->clientIdThreadCounter].clientThread);
-          free(wserver->clientThreads[wserver->clientIdThreadCounter].args);
-          wserver->clientIdThreadCounter--;
-        }
-        pthread_mutex_unlock(&wserver->mutexLock);
-      }
-      if (wserver->clientIdThreadCounter != 0) {
-        wserver->clientThreads = realloc(wserver->clientThreads, sizeof(struct clientThreadState)*(wserver->clientIdThreadCounter+1));
-        if (wserver->clientThreads == NULL) {
-          printErr(errMemAlloc);
-          close(newSocket);
-          pthread_exit(NULL);
-        }
-      }
     }
-    wserver->clientIdThreadCounter++;
   }
-
-  // freeing last remaining client Thread State which is not freed in the clenup routine
-  free(wserver->clientThreads->clientThread);
-  free(wserver->clientThreads->args);
-  free(wserver->clientThreads);
 
   *err = errOk;
 }
